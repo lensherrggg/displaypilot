@@ -11,8 +11,9 @@ DisplayPilot 是一个跨平台的菜单栏 / 系统托盘小工具，用 DDC/CI
 - **可诊断**：复制包含显示器身份、VCP 读数与能力字符串的报告，便于定位固件差异。
 - **命令行兜底**：图形界面之外保留 `list / switch / brightness / volume / mute / diagnose / config` 子命令。
 
-> 默认版本为 **0.1.0**。Windows 已完成构建、CLI 与图形界面冒烟验证；本机显示器不响应 DDC/CI，
-> 输入切换 / 亮度 / 音量的真实写入仍需在支持 DDC/CI 的硬件上验收。macOS 目标已配置，同样需要实机验收。
+> 默认版本为 **0.1.1**。Windows 已完成构建、CLI 与图形界面冒烟验证，并在 LG 27UL850 上实测 DDC/CI：
+> HDMI / DP 输入切换、亮度、音量与静音均可用。该机型无法通过 Windows 的标准 DDC/CI 接口切换到
+> USB-C（需要厂商专用寻址），见「排查」。macOS 目标已配置，仍需实机验收。
 
 ## 界面
 
@@ -29,7 +30,7 @@ Windows 上使用同布局的 CSS 半透明面板；macOS 上额外应用 vibran
 
 | 平台 | 状态 | 说明 |
 | --- | --- | --- |
-| Windows 10/11 x64 | 支持，已完成构建、CLI 与界面冒烟验证 | 通过 `ddc-winapi` 后端访问显示器；需要 WebView2 Runtime 与 MSVC 工具链。真实 VCP 写入需 DDC/CI 可用硬件。 |
+| Windows 10/11 x64 | 支持，已在 LG 27UL850 上验证 DDC/CI | 通过 `ddc-winapi` 后端访问显示器；需要 WebView2 Runtime 与 MSVC 工具链。HDMI / DP 切换与亮度 / 音量可用；LG 部分固件的 USB-C 切换需要厂商专用寻址，Windows 标准 DDC/CI 无法发送。 |
 | macOS 11+ | 目标平台，需实机验收 | 通过 `ddc-macos` 后端访问；应用以 Accessory 模式运行（不显示 Dock 图标），面板使用 vibrancy。 |
 | Linux | 未正式支持 | 依赖层可能可用，但未提供打包、测试与桌面集成。 |
 
@@ -241,7 +242,7 @@ npm run check          # 以上全部
 
 ## 版本管理
 
-- 当前版本 **0.1.0**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
+- 当前版本 **0.1.1**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
 - `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（以及 `Cargo.lock`）由脚本同步。
 - 发版步骤：`npm run version:set -- 0.2.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
 - 每次发布打 `v<version>` 标签。详细规则见 **[docs/VERSIONING.md](docs/VERSIONING.md)**。
@@ -257,6 +258,7 @@ DisplayPilot 不包含遥测、不发起网络请求，也不需要账号。所�
 | --- | --- |
 | 未发现显示器 | 唤醒显示器；在 OSD 中启用 DDC/CI；改用直连线缆；点击「重新扫描」。 |
 | 输入源切换失败 | 用「复制诊断」确认 VCP `0x60` 与能力字符串；在 `profile_overrides` 中修正输入值或改用厂商选择器。 |
+| 切到 USB-C 提示“显示器没有接受切换” | 部分 LG 固件（如 27UL850）的 USB-C 只接受厂商专用寻址，Windows 标准 DDC/CI 接口无法发送 | 把另一台主机改接 HDMI / DP（或使用 USB-C→HDMI / DP 转接），也可以直接在显示器 OSD 中切换。HDMI / DP 的程序内切换不受影响。 |
 | 亮度可调但音量不可用 | 显示器可能不支持 `0x62`；`auto` 探测会禁用控件，属预期行为。可在配置中显式设为 `true` 强制显示。 |
 | 快捷键无效 | 查看设置页的注册状态；换用未被系统占用的组合键后重新加载配置。 |
 | 配置修改后没有生效 | 设置页点击「重新加载配置」；若文件解析失败，页面会显示具体错误。 |

@@ -1,7 +1,7 @@
 {
   "name": "displaypilot",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Menu bar / system tray display input, brightness and audio control over DDC/CI",
   "type": "module",
   "scripts": {

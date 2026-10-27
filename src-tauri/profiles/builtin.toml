@@ -9,7 +9,7 @@ id = "lg-27ul850"
 label = "LG 27UL850"
 priority = 100
 current_input_vcp_code = 0x60
-match = { vendor_id = "GSM", model_name_any = ["*27UL850*"] }
+match = { model_name_any = ["*27UL850*", "*UL850*"] }
 
 [profiles.capabilities]
 input_switch = true
@@ -34,16 +34,16 @@ vcp_code = 0x8D
 on_value = 1
 off_value = 2
 
-# LG's input select values are vendor-specific in practice. These defaults are
-# field-reported for LG 27UL850; use "诊断信息" to verify, then override them in
-# the user config if your firmware differs.
+# Input values verified against LG 27UL850 firmware whose VCP 0x60 capabilities
+# report (11 12 0F 10). Some LG firmware instead expects vendor values
+# 0x90/0x91/0xD0/0xD1; override the inputs in the user config if your unit does.
 [[profiles.inputs]]
 id = "hdmi1"
 label = "HDMI1"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x90
+value = 0x11
 
 [[profiles.inputs]]
 id = "hdmi2"
@@ -51,7 +51,7 @@ label = "HDMI2"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x91
+value = 0x12
 
 [[profiles.inputs]]
 id = "dp"
@@ -59,15 +59,16 @@ label = "DP"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD0
+value = 0x0F
 
+# USB-C is exposed as the second DisplayPort input (0x10) on this firmware.
 [[profiles.inputs]]
 id = "typec"
 label = "TypeC"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD1
+value = 0x10
 
 [[profiles]]
 id = "generic-ddc"

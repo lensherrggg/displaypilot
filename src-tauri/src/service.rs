@@ -266,6 +266,60 @@ impl<T: DdcTransport> DisplayService<T> {
             return Err(AppError::switch_failed(&error));
         }
 
+        // DDC input writes are fire-and-forget on Windows: SetVCPFeature can
+        // report success even when the monitor ignores the value. Reading back
+        // gives the log enough evidence to distinguish those cases.
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let readback = {
+            let transport = &self.transport;
+            let display = &mut self.displays[index];
+            match transport.read_vcp(&mut display.handle, selector.vcp_code()) {
+                Ok(reading) => {
+                    log::info!(
+                        "Post-switch input readback: 0x{:04X} (requested 0x{:04X})",
+                        reading.value,
+                        selector.value()
+                    );
+                    Some(reading.value)
+                }
+                Err(error) => {
+                    log::info!(
+                        "Post-switch input readback unavailable: {error} (display may have switched)"
+                    );
+                    None
+                }
+            }
+        };
+
+        if let Some(value) = readback {
+            let profile = &self.displays[index].profile;
+            let accepted = value == selector.value()
+                || profile
+                    .input_for_value(value)
+                    .is_some_and(|input| input.id == input_id);
+            if !accepted {
+                let current = profile
+                    .input_for_value(value)
+                    .map(|input| input.label.clone())
+                    .unwrap_or_else(|| format!("0x{value:04X}"));
+                log::warn!(
+                    "Input switch ignored for {display_id}: requested 0x{:04X}, still {current}",
+                    selector.value()
+                );
+                self.displays[index].snapshot = None;
+                self.last_used = Some(display_id.to_string());
+                return Err(AppError::new(
+                    "switch_ignored",
+                    format!("显示器没有接受切换到 {input_label}，当前仍为 {current}。"),
+                )
+                .with_hint(
+                    "确认目标接口已连接信号源，并在显示器 OSD 中检查 DDC/CI 与自动输入切换设置。\
+                     部分 LG 固件（尤其是 USB-C）只接受厂商专用寻址，Windows 的标准 DDC/CI \
+                     接口无法发送；可改用 HDMI / DP 连接，或直接在显示器 OSD 中切换。",
+                ));
+            }
+        }
+
         self.last_used = Some(display_id.to_string());
         let snapshot = self.displays[index]
             .snapshot
@@ -1195,6 +1249,7 @@ mod tests {
         values: BTreeMap<u8, VcpReading>,
         fail_reads: std::collections::HashSet<u8>,
         fail_writes: std::collections::HashSet<u8>,
+        ignored_writes: std::collections::HashSet<u8>,
         writes: Vec<(u8, u16)>,
         table_writes: Vec<(u8, u16, Vec<u8>)>,
         capabilities: String,
@@ -1205,7 +1260,7 @@ mod tests {
         fn lg() -> Self {
             let mut values = BTreeMap::new();
             values.insert(0x10, reading(128, 255));
-            values.insert(0x60, reading(0xD0, 0xD1));
+            values.insert(0x60, reading(0x0F, 0x12));
             values.insert(0x62, reading(64, 255));
             values.insert(0x8D, reading(1, 2));
             values.insert(0xDF, reading(0x0202, 0));
@@ -1335,6 +1390,9 @@ mod tests {
                 )));
             }
             state.writes.push((code, value));
+            if state.ignored_writes.contains(&code) {
+                return Ok(());
+            }
             let maximum = state.values.get(&code).map_or(0, |entry| entry.maximum);
             state.values.insert(code, reading(value, maximum));
             Ok(())
@@ -1393,7 +1451,7 @@ mod tests {
 
         let snapshot = service.snapshot(&id, false).unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0xD0));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x0F));
         assert_eq!(snapshot.brightness.percent, Some(50));
         assert_eq!(snapshot.brightness.raw_value, Some(128));
         assert!(snapshot.volume.editable);
@@ -1411,11 +1469,29 @@ mod tests {
 
         let snapshot = service.switch_input(&id, "hdmi1").unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0x90));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x11));
 
         let state = state.borrow();
-        assert_eq!(state.writes, vec![(0x60, 0x90)]);
-        assert_eq!(state.values[&0x60].value, 0x90);
+        assert_eq!(state.writes, vec![(0x60, 0x11)]);
+        assert_eq!(state.values[&0x60].value, 0x11);
+    }
+
+    #[test]
+    fn ignored_input_write_is_reported_and_snapshot_is_refreshed() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        state.borrow_mut().ignored_writes.insert(0x60);
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let error = service.switch_input(&id, "typec").unwrap_err();
+        assert_eq!(error.code, "switch_ignored");
+        assert!(error.message.contains("TypeC"));
+        assert!(error.hint.is_some());
+
+        let snapshot = service.snapshot(&id, false).unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x0F));
     }
 
     #[test]

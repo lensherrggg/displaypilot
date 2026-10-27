@@ -284,7 +284,7 @@ write_mode = "table"
 - 标量覆盖；
 - 未知 id 会被忽略并给出警告，不会让整份配置失效。
 
-例如，把 LG 27UL850 的 Type-C 值改为 `0x00D2`，并只改亮度的上限：
+例如，给 LG 27UL850 换一个本地化名称，并只改亮度上限：
 
 ```toml
 [profile_overrides.lg-27ul850]
@@ -292,7 +292,11 @@ label = "LG 27UL850（书房）"
 
 [profile_overrides.lg-27ul850.capabilities.brightness]
 max = 100
+```
 
+如果该固件使用另一组输入码，再整体覆盖 `inputs`（必须写全四项）：
+
+```toml
 [[profile_overrides.lg-27ul850.inputs]]
 id = "hdmi1"
 label = "HDMI1"
@@ -323,7 +327,7 @@ label = "TypeC"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD2
+value = 0xD1
 ```
 
 因为 `inputs` 是数组，必须提供完整四项；只写 Type-C 会让其余输入消失。
@@ -332,11 +336,18 @@ value = 0xD2
 
 | id | 优先级 | 匹配 | 亮度 | 音量 / 静音 | 输入值 |
 | --- | --- | --- | --- | --- | --- |
-| `lg-27ul850` | 100 | `vendor_id = "GSM"` 且型号名含 `27UL850` | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD1` |
+| `lg-27ul850` | 100 | 型号名含 `27UL850` 或 `UL850`（Windows 会用能力字符串回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10` |
 | `generic-ddc` | -100 | 空（通用回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x1B`（标准值） |
 
-LG 的输入值来自现场反馈，属于厂商私有编码；不同固件可能不同。先用「复制诊断」查看 VCP `0x60`
-的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。
+27UL850 的能力字符串会报告 `VCP 0x60(11 12 0F 10)`，因此内置档案使用这组标准值；USB-C 由
+第二个 DisplayPort 输入 `0x10` 表示。部分 LG 固件改用私有值 `0x90/0x91/0xD0/0xD1`（USB-C 可能
+是 `0xD2`），此时用上面的 `inputs` 覆盖即可。程序本身没有任何 `if LG` 之类的分支。
+
+> **Windows + LG USB-C 的限制**：实测 27UL850 的 USB-C 切换只接受厂商专用寻址
+> （VCP `0xF4`，DDC 源地址 `0x50`），Windows 的 `SetVCPFeature` 固定使用 `0x51`，无法发送这类
+> 命令；标准值 `0x10` 与私有值 `0xD1/0xD2` 都会被忽略。因此 Windows 上请把目标主机接到
+> HDMI / DP，或使用显示器 OSD 切换 USB-C。HDMI / DP 的程序内切换正常。应用会在回读发现
+> 切换被忽略时返回“显示器没有接受切换”的可操作错误，而不是假装成功。
 
 ## 8. 验证与排错
 
@@ -356,49 +367,25 @@ LG 的输入值来自现场反馈，属于厂商私有编码；不同固件可�
 | --- | --- | --- |
 | `profile_matched = false` | 厂商码 / 型号名不匹配 | 用诊断中的 `vendor_id`、`model_name` 修正 `match`，或新建 `custom_profiles`。 |
 | 输入切换失败但诊断有 `0x60` | 值不对或需要厂商写入 | 修正 `value`；尝试 `type = "vendor"` 与 `write_mode`。 |
+| 切换被忽略（`switch_ignored`） | 显示器没有接受写入的值，或接口无信号 | 确认信号源；Windows 上 LG 的 USB-C 需要厂商专用寻址，标准 DDC 无法发送，请改用 HDMI / DP 或 OSD 切换。 |
 | 音量控件不可用 | `auto` 读取失败 | 确认显示器支持 `0x62`；必要时显式 `supported = true` 强制显示。 |
 | 配置覆盖后输入变少 | 覆盖数组时未写全 | `inputs` 是整体替换，补全所有输入。 |
 | 设置页保存失败 | 文件不是有效 TOML/不可写 | 修正语法与文件权限；查看日志。 |
 
 ## 9. 最小可用示例
 
-只覆盖 LG 的 Type-C 值，其余沿用内置：
+只改名称和步进，其余沿用内置：
 
 ```toml
 schema_version = 1
 
+[general]
+brightness_step = 2
+volume_step = 2
+
 [profile_overrides.lg-27ul850]
-[[profile_overrides.lg-27ul850.inputs]]
-id = "hdmi1"
-label = "HDMI1"
-[profile_overrides.lg-27ul850.inputs.selector]
-type = "standard"
-vcp_code = 0x60
-value = 0x90
-
-[[profile_overrides.lg-27ul850.inputs]]
-id = "hdmi2"
-label = "HDMI2"
-[profile_overrides.lg-27ul850.inputs.selector]
-type = "standard"
-vcp_code = 0x60
-value = 0x91
-
-[[profile_overrides.lg-27ul850.inputs]]
-id = "dp"
-label = "DP"
-[profile_overrides.lg-27ul850.inputs.selector]
-type = "standard"
-vcp_code = 0x60
-value = 0xD0
-
-[[profile_overrides.lg-27ul850.inputs]]
-id = "typec"
-label = "TypeC"
-[profile_overrides.lg-27ul850.inputs.selector]
-type = "standard"
-vcp_code = 0x60
-value = 0xD2
+label = "LG 27UL850（书房）"
 ```
 
-其余字段（步进、快捷键）会自动使用默认值；这是有意设计的：用户只需要维护与默认不同的部分。
+如果该固件的输入码与内置不同，再按第 6 节补全四项 `inputs`。其余字段（快捷键、能力）会自动
+使用默认值；这是有意设计的：用户只需要维护与默认不同的部分。

@@ -563,7 +563,21 @@ mod tests {
         assert!(matched);
         assert_eq!(profile.id, "lg-27ul850");
         assert_eq!(profile.inputs.len(), 4);
-        assert_eq!(profile.input("dp").unwrap().selector.value(), 0xD0);
+        assert_eq!(profile.input("dp").unwrap().selector.value(), 0x0F);
+        assert_eq!(profile.input("typec").unwrap().selector.value(), 0x10);
+    }
+
+    #[test]
+    fn lg_profile_matches_capability_model_without_edid() {
+        let catalog = ProfileCatalog::load(&UserConfig::default()).unwrap();
+        let mut identity = identity("UL850");
+        identity.vendor_id = None;
+        identity.model_id = None;
+        identity.serial_number = None;
+
+        let (profile, matched) = catalog.resolve(&identity);
+        assert!(matched);
+        assert_eq!(profile.id, "lg-27ul850");
     }
 
     #[test]
