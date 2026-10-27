@@ -1,0 +1,25 @@
+# Build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Local environment
+.env
+.env.local
+*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
+
+# Logs and test intermediates
+*.log
+coverage/
+playwright-report/
+test-results/

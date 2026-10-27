@@ -1,0 +1,131 @@
+# DisplayPilot built-in display profiles.
+#
+# These profiles are compiled into the application and are never modified at runtime.
+# User overrides live in the app config directory; see docs/CONFIGURATION.md.
+schema_version = 1
+
+[[profiles]]
+id = "lg-27ul850"
+label = "LG 27UL850"
+priority = 100
+current_input_vcp_code = 0x60
+match = { vendor_id = "GSM", model_name_any = ["*27UL850*"] }
+
+[profiles.capabilities]
+input_switch = true
+
+[profiles.capabilities.brightness]
+supported = true
+vcp_code = 0x10
+min = 0
+max = 255
+step = 5
+
+[profiles.capabilities.volume]
+supported = "auto"
+vcp_code = 0x62
+min = 0
+max = 255
+step = 5
+
+[profiles.capabilities.mute]
+supported = "auto"
+vcp_code = 0x8D
+on_value = 1
+off_value = 2
+
+# LG's input select values are vendor-specific in practice. These defaults are
+# field-reported for LG 27UL850; use "诊断信息" to verify, then override them in
+# the user config if your firmware differs.
+[[profiles.inputs]]
+id = "hdmi1"
+label = "HDMI1"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x90
+
+[[profiles.inputs]]
+id = "hdmi2"
+label = "HDMI2"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x91
+
+[[profiles.inputs]]
+id = "dp"
+label = "DP"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0xD0
+
+[[profiles.inputs]]
+id = "typec"
+label = "TypeC"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0xD1
+
+[[profiles]]
+id = "generic-ddc"
+label = "通用 DDC/CI 显示器"
+priority = -100
+current_input_vcp_code = 0x60
+
+[profiles.capabilities]
+input_switch = true
+
+[profiles.capabilities.brightness]
+supported = "auto"
+vcp_code = 0x10
+min = 0
+max = 255
+step = 5
+
+[profiles.capabilities.volume]
+supported = "auto"
+vcp_code = 0x62
+min = 0
+max = 255
+step = 5
+
+[profiles.capabilities.mute]
+supported = "auto"
+vcp_code = 0x8D
+on_value = 1
+off_value = 2
+
+[[profiles.inputs]]
+id = "hdmi1"
+label = "HDMI1"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x11
+
+[[profiles.inputs]]
+id = "hdmi2"
+label = "HDMI2"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x12
+
+[[profiles.inputs]]
+id = "dp"
+label = "DP"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x0F
+
+[[profiles.inputs]]
+id = "typec"
+label = "TypeC"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x1B

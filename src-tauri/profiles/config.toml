@@ -1,0 +1,73 @@
+# DisplayPilot user configuration
+#
+# This file is created once and is never overwritten by application updates.
+# Invalid values are reported in 设置 → 配置状态. Built-in profiles remain active
+# when this file is absent or cannot be parsed.
+schema_version = 1
+
+[general]
+# Step used by the global brightness/volume shortcuts and arrow keys.
+brightness_step = 5
+volume_step = 5
+# Auto-hide the card when it loses focus. Matches macOS HIG popover behavior.
+auto_hide = true
+# Keep unsupported audio controls visible but disabled, with an explanation.
+show_unsupported_audio = true
+
+[shortcuts]
+# Accelerators use the global-hotkey syntax, e.g. "Control+Alt+KeyH".
+# Empty strings mean "not assigned". Defaults intentionally avoid system conflicts.
+toggle_panel = ""
+brightness_up = ""
+brightness_down = ""
+volume_up = ""
+volume_down = ""
+mute = ""
+
+# Each input shortcut is matched to the first/selected display's configured input ID.
+# Add one block per input. Values are empty by default.
+[[shortcuts.input_switch]]
+input = "hdmi1"
+accelerator = ""
+
+[[shortcuts.input_switch]]
+input = "hdmi2"
+accelerator = ""
+
+[[shortcuts.input_switch]]
+input = "dp"
+accelerator = ""
+
+[[shortcuts.input_switch]]
+input = "typec"
+accelerator = ""
+
+# ---------------------------------------------------------------------------
+# Optional user profiles
+# ---------------------------------------------------------------------------
+# Add full profiles for monitors that are not built in:
+#
+# [[custom_profiles]]
+# id = "dell-u2723qe"
+# label = "Dell U2723QE"
+# priority = 50
+# current_input_vcp_code = 0x60
+# match = { vendor_id = "DEL", model_name_any = ["*U2723QE*"] }
+# ... capabilities and inputs as documented in docs/CONFIGURATION.md
+
+# Override only the fields you need in a built-in profile. Arrays (inputs) replace
+# the built-in array wholesale; nested tables are merged.
+#
+# [profile_overrides.lg-27ul850]
+# label = "LG 27UL850 (书房)"
+#
+# [profile_overrides.lg-27ul850.capabilities.brightness]
+# max = 100
+#
+# [[profile_overrides.lg-27ul850.inputs]]
+# id = "typec"
+# label = "TypeC"
+# [profile_overrides.lg-27ul850.inputs.selector]
+# type = "standard"
+# vcp_code = 0x60
+# value = 0xD1

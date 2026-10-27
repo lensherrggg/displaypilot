@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DisplayPilot 设置</title>
+    <link rel="stylesheet" href="/src/settings.css" />
+  </head>
+  <body class="settings-body">
+    <main class="settings-shell" id="settings-shell">
+      <header class="settings-header" data-tauri-drag-region>
+        <div class="brand">
+          <img class="app-icon" src="/icon.png" alt="" width="28" height="28" />
+          <div class="brand-text">
+            <h1>设置</h1>
+            <p id="about-line">DisplayPilot</p>
+          </div>
+        </div>
+        <button class="icon-button" id="close-settings" type="button" aria-label="关闭设置" title="关闭">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m6 6 8 8M14 6l-8 8" />
+          </svg>
+        </button>
+      </header>
+
+      <div class="banner" id="config-banner" role="status" hidden>
+        <div class="banner-text">
+          <strong>配置需要检查</strong>
+          <p id="config-message"></p>
+        </div>
+        <button class="text-button" id="banner-open-config" type="button">打开配置</button>
+      </div>
+
+      <div class="settings-scroll" id="settings-scroll">
+        <section class="group" aria-labelledby="general-title">
+          <div class="group-header">
+            <h2 id="general-title">通用</h2>
+            <span class="group-note" id="general-note">已保存</span>
+          </div>
+          <div class="card settings-card">
+            <label class="setting-row" for="brightness-step">
+              <span class="setting-copy">
+                <span class="setting-label">亮度步进</span>
+                <span class="setting-desc">使用快捷键调节亮度时，每次改变 1–50%。</span>
+              </span>
+              <span class="number-field">
+                <input
+                  id="brightness-step"
+                  type="number"
+                  min="1"
+                  max="50"
+                  step="1"
+                  inputmode="numeric"
+                  aria-describedby="brightness-step-desc"
+                />
+                <span class="unit" aria-hidden="true">%</span>
+              </span>
+            </label>
+            <label class="setting-row" for="volume-step">
+              <span class="setting-copy">
+                <span class="setting-label">音量步进</span>
+                <span class="setting-desc">使用快捷键调节音量时，每次改变 1–50%。</span>
+              </span>
+              <span class="number-field">
+                <input
+                  id="volume-step"
+                  type="number"
+                  min="1"
+                  max="50"
+                  step="1"
+                  inputmode="numeric"
+                />
+                <span class="unit" aria-hidden="true">%</span>
+              </span>
+            </label>
+            <label class="setting-row" for="auto-hide">
+              <span class="setting-copy">
+                <span class="setting-label">失去焦点时隐藏面板</span>
+                <span class="setting-desc">点击其他窗口后自动收起，符合菜单栏工具的习惯。</span>
+              </span>
+              <input class="toggle" id="auto-hide" type="checkbox" role="switch" />
+            </label>
+            <label class="setting-row" for="show-unsupported-audio">
+              <span class="setting-copy">
+                <span class="setting-label">始终显示音频卡片</span>
+                <span class="setting-desc">显示器不支持音量或静音时，仍显示带说明的禁用控件。</span>
+              </span>
+              <input
+                class="toggle"
+                id="show-unsupported-audio"
+                type="checkbox"
+                role="switch"
+              />
+            </label>
+            <div class="card-footer">
+              <button class="text-button" id="reset-general" type="button">还原</button>
+              <button class="primary-button" id="save-general" type="button" disabled>
+                保存设置
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="shortcuts-title">
+          <div class="group-header">
+            <h2 id="shortcuts-title">快捷键</h2>
+            <span class="group-note">编辑 config.toml 后重新加载</span>
+          </div>
+          <div class="card settings-card">
+            <ul class="list shortcut-list" id="shortcut-list" aria-label="快捷键绑定"></ul>
+            <p class="footnote" id="shortcut-note">
+              空快捷键不会注册。若组合键已被系统或其他应用占用，状态会显示为注册失败。
+            </p>
+            <div class="card-footer">
+              <button class="secondary-button" id="reload-config" type="button">重新加载配置</button>
+              <button class="text-button" id="open-config" type="button">打开配置文件目录</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="displays-title">
+          <div class="group-header">
+            <h2 id="displays-title">显示器</h2>
+            <button class="text-button" id="refresh-displays" type="button">重新扫描</button>
+          </div>
+          <div class="card settings-card">
+            <ul class="list" id="display-list" aria-label="已发现的显示器"></ul>
+            <p class="footnote" id="discovery-note" hidden></p>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="profiles-title">
+          <div class="group-header">
+            <h2 id="profiles-title">配置档</h2>
+            <span class="group-note">内置 + 用户覆盖</span>
+          </div>
+          <div class="card settings-card">
+            <ul class="list profile-list" id="profile-list" aria-label="显示器配置档"></ul>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="paths-title">
+          <div class="group-header">
+            <h2 id="paths-title">文件与日志</h2>
+          </div>
+          <div class="card settings-card">
+            <div class="path-row">
+              <div class="path-copy">
+                <span class="setting-label">配置文件</span>
+                <code id="config-path">—</code>
+              </div>
+              <button class="secondary-button" id="open-config-dir" type="button">打开</button>
+            </div>
+            <div class="path-row">
+              <div class="path-copy">
+                <span class="setting-label">日志文件</span>
+                <code id="log-path">—</code>
+              </div>
+              <button class="secondary-button" id="open-log-dir" type="button">打开</button>
+            </div>
+            <p class="footnote">
+              日志按 2 MB 轮转并保留 3 份备份。诊断信息可从面板底部复制。
+            </p>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="about-title">
+          <div class="group-header">
+            <h2 id="about-title">关于</h2>
+          </div>
+          <div class="card settings-card">
+            <div class="about-grid">
+              <span class="setting-label">版本</span>
+              <span id="app-version">—</span>
+              <span class="setting-label">平台</span>
+              <span id="platform-line">—</span>
+              <span class="setting-label">标识</span>
+              <code>app.displaypilot.desktop</code>
+            </div>
+            <div class="card-footer">
+              <span class="footnote">退出后托盘图标消失；重新启动即可恢复。</span>
+              <button class="danger-button" id="quit-app" type="button">退出 DisplayPilot</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="settings-footer">
+        <span class="status-line" id="status-line">正在加载…</span>
+        <span class="preview-note" id="preview-note" hidden>浏览器预览模式</span>
+      </footer>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/src/settings.ts"></script>
+  </body>
+</html>
