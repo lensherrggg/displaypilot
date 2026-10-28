@@ -11,7 +11,7 @@ DisplayPilot 是一个跨平台的菜单栏 / 系统托盘小工具，用 DDC/CI
 - **可诊断**：复制包含显示器身份、VCP 读数与能力字符串的报告，便于定位固件差异。
 - **命令行兜底**：图形界面之外保留 `list / switch / brightness / volume / mute / diagnose / config` 子命令。
 
-> 当前版本 **0.2.0**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
+> 当前版本 **0.2.1**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
 > （LG HDR 4K）上完成菜单栏、DDC/CI 读取与真实写入验证。其他显示器仍需按测试清单验收。
 
 ## 界面
@@ -179,7 +179,7 @@ displaypilot --help
                │ IPC（camelCase JSON）
 ┌──────────────▼──────────────┐
 │ Tauri commands              │
-│  └─ WorkerClient（2s 超时）  │
+│  └─ WorkerClient（4s 超时）  │
 └──────────────┬──────────────┘
                │ mpsc + 请求 id
 ┌──────────────▼──────────────┐
@@ -194,7 +194,7 @@ displaypilot --help
 ```
 
 - DDC 句柄不是 `Send`，因此只存在于一个专用线程；所有硬件访问串行执行，IPC 调用通过
-  `spawn_blocking` 等待结果，最长 2 秒，避免 UI 卡死。
+  `spawn_blocking` 等待结果，最长 4 秒，避免 UI 卡死。
 - 显示器 ID 由厂商、型号、序列号 / EDID 序列（必要时才用后端路径）经 FNV-1a 生成，
   与枚举顺序无关，重启后保持稳定。
 - 输入源、VCP 值、能力范围和写入方式全部来自配置档；服务层只执行选择器，不判断机型。
@@ -248,7 +248,7 @@ npm run check          # 以上全部
 
 ## 版本管理
 
-- 当前版本 **0.2.0**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
+- 当前版本 **0.2.1**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
 - `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（以及 `Cargo.lock`）由脚本同步。
 - 发版步骤：`npm run version:set -- 0.2.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
 - 每次发布打 `v<version>` 标签。详细规则见 **[docs/VERSIONING.md](docs/VERSIONING.md)**。

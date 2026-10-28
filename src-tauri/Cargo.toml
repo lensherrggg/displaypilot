@@ -1,6 +1,6 @@
 [package]
 name = "displaypilot"
-version = "0.2.0"
+version = "0.2.1"
 description = "Cross-platform DDC/CI display input, brightness and audio control"
 authors = ["DisplayPilot contributors"]
 edition = "2021"
