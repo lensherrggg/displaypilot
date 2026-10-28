@@ -149,6 +149,7 @@ pub struct HardwareDisplay {
 impl DdcTransport for HardwareTransport {
     type Handle = HardwareDisplay;
 
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     fn enumerate(&self) -> Result<Vec<RawDisplay<Self::Handle>>, TransportError> {
         let displays = HiDisplay::enumerate();
         log::info!("DDC enumeration found {} display(s)", displays.len());
@@ -161,6 +162,18 @@ impl DdcTransport for HardwareTransport {
                     log::warn!("Capabilities probe failed for {}: {error:#}", display.info);
                     Some(format!("{error:#}"))
                 }
+            };
+
+            // Windows exposes no EDID through ddc-hi, so the model name from the
+            // MCCS capabilities string is the only identity signal for matching.
+            let capability_model = if display.info.model_name.is_none() {
+                display
+                    .handle
+                    .capabilities_string()
+                    .ok()
+                    .and_then(|raw| model_from_capabilities(&String::from_utf8_lossy(&raw)))
+            } else {
+                None
             };
 
             let info = &display.info;
@@ -203,6 +216,8 @@ impl DdcTransport for HardwareTransport {
                     edid = monitor.edid();
                 }
             }
+
+            let model_name = model_name.or(capability_model);
 
             log::info!(
                 "display backend={} id={} vendor={:?} model_id={:?} model={:?} serial={:?}",
@@ -296,5 +311,70 @@ impl DdcTransport for HardwareTransport {
             let _ = display;
             None
         }
+    }
+}
+
+fn model_from_capabilities(raw: &str) -> Option<String> {
+    if let Some(start) = raw.find("model(") {
+        let rest = &raw[start + "model(".len()..];
+        if let Some(end) = rest.find(')') {
+            return sanitize_model(&rest[..end]);
+        }
+    }
+
+    // Some firmware (notably LG) emits the model directly after type(lcd),
+    // e.g. "(prot(monitor)type(lcd)UL850cmds(...))".
+    let start = raw.find("type(")?;
+    let rest = &raw[start + "type(".len()..];
+    let close = rest.find(')')?;
+    let after_type = &rest[close + 1..];
+    let end = after_type.find("cmds(")?;
+    sanitize_model(&after_type[..end])
+}
+
+fn sanitize_model(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 48 {
+        return None;
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_from_capabilities;
+
+    #[test]
+    fn model_is_read_from_standard_model_field() {
+        assert_eq!(
+            model_from_capabilities("(prot(monitor)type(lcd)model(DELL U2723QE)cmds(01))")
+                .as_deref(),
+            Some("DELL U2723QE")
+        );
+    }
+
+    #[test]
+    fn model_is_read_from_unlabelled_lg_capabilities() {
+        let caps = "(prot(monitor)type(lcd)UL850cmds(01 02 03 0C E3 F3)vcp(02 10 60( 11 12 0F 10))mccs_ver(2.1))";
+        assert_eq!(model_from_capabilities(caps).as_deref(), Some("UL850"));
+    }
+
+    #[test]
+    fn missing_or_invalid_model_is_ignored() {
+        assert_eq!(
+            model_from_capabilities("(prot(monitor)type(lcd)cmds(01))"),
+            None
+        );
+        assert_eq!(
+            model_from_capabilities("(prot(monitor)type(lcd)(bad)cmds(01))"),
+            None
+        );
+        assert_eq!(model_from_capabilities("(model())"), None);
     }
 }
