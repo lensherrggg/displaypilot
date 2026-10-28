@@ -18,9 +18,19 @@ npm run check          # 版本 + 前端构建 + Rust 测试 + fmt/clippy
 | --- | --- |
 | `npm run check:version` | `package.json`、`tauri.conf.json`、`Cargo.toml` 版本一致，且 CHANGELOG 有对应小节。 |
 | `npm run build` | `tsc --noEmit` 类型检查 + Vite 构建 `index.html`、`settings.html`。 |
-| `npm run test:rust` | 35 个 Rust 单元测试（领域逻辑、配置、档案、工具函数、CLI 解析）。 |
+| `npm run test:rust` | 36 个 Rust 单元测试（领域逻辑、配置、档案、工具函数、CLI 解析）。 |
 | `npm run check:rust` | `cargo fmt --check` + `cargo clippy --all-targets -D warnings`。 |
 | `npm run tauri build` | 生成 Windows/macOS 可执行文件与安装包。 |
+
+### 0.2.3 自动化结果（macOS 27.0.1 arm64）
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm run check:version` | 通过：0.2.3 三处清单、Cargo.lock 与 CHANGELOG 一致。 |
+| `npm run build` | 通过：两个页面与资源产出到 `dist/`。 |
+| `npm run test:rust` | 通过：36 passed / 0 failed（新增“写入后只回读一次”与“总线卡死不再轮询”测试）。 |
+| `npm run check:rust` | 通过：格式无差异，Clippy 无警告。 |
+| `npm run tauri build -- --debug` | 通过：生成 `DisplayPilot.app` 与 `.dmg`。 |
 
 ### 0.2.2 自动化结果（macOS 27.0.1 arm64）
 
@@ -186,8 +196,10 @@ npm run tauri dev
 > 先接入第二台主机，或确认目标接口有信号后再验收。
 
 - [ ] 点击后显示器实际切换；面板当前项更新。
+- [ ] 写入后等待约 1.5 s 再回读一次 `0x60`，等待期间不产生任何 DDC 流量（0.2.3 起）。
 - [ ] 写入成功后回读 `0x60` 确认；显示器未实际切换时显示 `switch_unconfirmed`，面板保持原输入。
 - [ ] 回读请求失败但 macOS 仍报告显示器链路在线时，同样显示 `switch_unconfirmed`（DDC 总线卡死而非切走，0.2.2 起）。
+- [ ] 总线已卡死时（回读超时）不再重试回读，避免继续加剧固件卡死。
 - [ ] 目标接口信号异常时，显示器 OSD 可能显示“超出工作频率范围”或“无信号”；这是目标主机输出时序或线缆问题，不是 DDC 写入失败，需调整源设备分辨率 / 刷新率。
 - [ ] 重复点击当前输入不会发送多余写入。
 - [ ] 目标接口无信号时返回可操作错误，面板恢复可用，不长期卡在“切换中…”。
@@ -263,7 +275,7 @@ npm run tauri dev
 | `displaypilot diagnose --json` | 完整诊断 JSON。 |
 | `displaypilot config` | 路径、配置、档案、快捷键。 |
 | `displaypilot --help` | 帮助，退出码 0。 |
-| `displaypilot --version` | `displaypilot 0.2.2`。 |
+| `displaypilot --version` | `displaypilot 0.2.3`。 |
 | `displaypilot bogus` | 参数错误，退出码 64。 |
 | `displaypilot --help --json` | 帮助优先，退出码 0。 |
 
@@ -314,7 +326,7 @@ npm run tauri build
 | 设置窗口 | 通过：独立页面、深色渲染正常 |
 | `cargo test` / clippy / `npm run build` | 通过 |
 | 真实 DDC 读取 | 通过：LG 27UL850 亮度 / 音量 / 静音 / 输入 / 能力字符串 |
-| 真实输入切换 | 部分：TypeC 写入 `0x10` 后回读连续为 HDMI1，显示器 OSD 短暂提示“超出工作频率范围”后回到 HDMI1（目标口信号时序超出面板范围，旋钮菜单也显示 HDMI1）；DP 写入 `0x0F` 后 DDC 短暂失联但 macOS 链路仍在线，0.2.2 据此判为未切换并返回 `switch_unconfirmed`。待接入正常信号源后复验。 |
+| 真实输入切换 | 部分：0.2.1 的“写入后立即回读”会让 LG 固件 DDC 处理卡死数分钟，期间切换写入被忽略（只能断电恢复）。0.2.3 改为等待 1.5 s 后只回读一次。TypeC 写入 `0x10` 后显示器 OSD 短暂提示“超出工作频率范围”并回到 HDMI1（目标口信号时序超出面板范围，旋钮菜单也显示 HDMI1）；DP 写入 `0x0F` 后 DDC 短暂失联但 macOS 链路仍在线，按 0.2.3 判定返回 `switch_unconfirmed`。待目标主机输出正常信号后复验。 |
 | 签名 | 本地 ad-hoc；未做 Developer ID 签名与公证 |
 
 ## 11. 回归清单（每次发布前）
