@@ -287,22 +287,26 @@ impl<T: DdcTransport> DisplayService<T> {
         // command: the bus then answers reads but ignores every later input
         // write until the monitor is power-cycled. Wait for the panel to
         // settle, then read back exactly once.
+        //
+        // A read that answers proves the panel is still on this input. A read
+        // that fails proves this host lost the panel, i.e. the switch was
+        // accepted. The CoreGraphics link state is only logged: LG keeps the
+        // link up even after switching away, so it cannot tell the two cases
+        // apart.
         let input_vcp_code = self.displays[index].profile.current_input_vcp_code;
         let target_value = selector.value();
         std::thread::sleep(self.input_settle);
-        let (observed, link_lost) = {
+        let observed = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
             match transport.read_vcp(&mut display.handle, input_vcp_code) {
-                Ok(reading) => (Some(reading.value), false),
+                Ok(reading) => Some(reading.value),
                 Err(error) => {
-                    log::debug!("Could not confirm input switch: {error}");
-                    // The panel really left this input: DDC dies with it. If the
-                    // backend cannot report the link we keep the older
-                    // assumption that the switch went through.
-                    let link_lost =
-                        matches!(transport.link_online(&display.handle), Some(false) | None);
-                    (None, link_lost)
+                    log::debug!(
+                        "Input readback failed after the panel settled: {error}; link={:?}",
+                        transport.link_online(&display.handle)
+                    );
+                    None
                 }
             }
         };
@@ -321,22 +325,6 @@ impl<T: DdcTransport> DisplayService<T> {
                     "确认目标接口已接入信号源，且显示器 OSD 菜单已退出；LG 固件在信号超出面板范围时会自动切回。",
                 ));
             }
-        } else if !link_lost {
-            // DDC stopped answering while the display still reports a live
-            // link, which means it never left this input (a real switch takes
-            // the link down with it). Do not claim success.
-            log::warn!(
-                "Input switch unverified: DDC stopped responding but the display link stayed up"
-            );
-            self.displays[index].snapshot = None;
-            self.last_used = Some(display_id.to_string());
-            return Err(AppError::new(
-                "switch_unconfirmed",
-                format!("无法确认已切换到{input_label}：显示器仍在线，但输入源读取无响应。"),
-            )
-            .with_hint(
-                "显示器可能忽略了本次切换或 OSD 菜单仍打开；退出菜单后重试，必要时给显示器断电重启。",
-            ));
         }
 
         self.last_used = Some(display_id.to_string());
@@ -1557,54 +1545,30 @@ mod tests {
     }
 
     #[test]
-    fn switch_input_reports_unconfirmed_when_ddc_wedges_but_link_stays_up() {
-        let transport = FakeTransport::lg();
-        let state = transport.state.clone();
-        state.borrow_mut().fail_reads.insert(0x60);
-        state.borrow_mut().link_online = Some(true);
-        let (mut service, _temp) = service(transport);
-        let id = only_display_id(&mut service);
-        service.snapshot(&id, true).unwrap();
-        state.borrow_mut().reads.clear();
+    fn switch_input_treats_lost_readback_as_success_regardless_of_link() {
+        // LG keeps CoreGraphics reporting the link online after switching away,
+        // so the link state must not turn a real switch into a false negative.
+        // A read that fails means this host lost the panel: the switch happened.
+        for link in [Some(true), Some(false), None] {
+            let transport = FakeTransport::lg();
+            let state = transport.state.clone();
+            state.borrow_mut().fail_reads.insert(0x60);
+            state.borrow_mut().link_online = link;
+            let (mut service, _temp) = service(transport);
+            let id = only_display_id(&mut service);
+            service.snapshot(&id, true).unwrap();
+            state.borrow_mut().reads.clear();
 
-        let error = service.switch_input(&id, "hdmi1").unwrap_err();
-        assert_eq!(error.code, "switch_unconfirmed");
-        assert!(error.message.contains("仍在线"));
-        assert!(error.hint.is_some());
-        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
-        assert_eq!(
-            state.borrow().reads,
-            vec![0x60],
-            "a wedged bus must not be polled again"
-        );
-    }
-
-    #[test]
-    fn switch_input_treats_lost_ddc_with_offline_link_as_success() {
-        let transport = FakeTransport::lg();
-        let state = transport.state.clone();
-        state.borrow_mut().fail_reads.insert(0x60);
-        state.borrow_mut().link_online = Some(false);
-        let (mut service, _temp) = service(transport);
-        let id = only_display_id(&mut service);
-
-        let snapshot = service.switch_input(&id, "hdmi1").unwrap();
-        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0x90));
-        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
-    }
-
-    #[test]
-    fn switch_input_assumes_success_when_link_state_is_unknown() {
-        let transport = FakeTransport::lg();
-        let state = transport.state.clone();
-        state.borrow_mut().fail_reads.insert(0x60);
-        let (mut service, _temp) = service(transport);
-        let id = only_display_id(&mut service);
-
-        let snapshot = service.switch_input(&id, "hdmi1").unwrap();
-        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
-        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+            let snapshot = service.switch_input(&id, "hdmi1").unwrap();
+            assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
+            assert_eq!(snapshot.current_input.raw_value, Some(0x90));
+            assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+            assert_eq!(
+                state.borrow().reads,
+                vec![0x60],
+                "a failed readback must not be retried"
+            );
+        }
     }
 
     #[test]
