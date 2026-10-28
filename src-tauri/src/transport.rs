@@ -132,6 +132,16 @@ pub trait DdcTransport {
 
     fn capabilities_string(&self, display: &mut Self::Handle) -> Result<String, TransportError>;
 
+    /// Whether a failed post-switch readback can be verified with a fresh handle.
+    ///
+    /// Windows invalidates handles after display-mode changes while the panel may
+    /// still be on this input; re-enumerating and reading again distinguishes the
+    /// two. LG firmware can wedge when poked again on macOS, so that backend keeps
+    /// treating a failed read as a completed switch.
+    fn supports_readback_verification(&self) -> bool {
+        false
+    }
+
     /// Reports whether the display link is still up, when the backend can tell.
     ///
     /// A failed DDC read after an input switch is ambiguous: the panel may have
@@ -380,6 +390,10 @@ impl DdcTransport for HardwareTransport {
             )
         })?;
         device.write(source, code, value)
+    }
+
+    fn supports_readback_verification(&self) -> bool {
+        cfg!(target_os = "windows")
     }
 
     fn link_online(&self, display: &Self::Handle) -> Option<bool> {

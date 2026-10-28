@@ -13,7 +13,7 @@ use crate::profile::{
     Capabilities, DisplayIdentity, DisplayProfile, InputSelector, InputSource, ProfileCatalog,
     RangeCapability, RawSelector, VendorWriteMode,
 };
-use crate::transport::{DdcTransport, RawSupport, TransportError, VcpReading};
+use crate::transport::{DdcTransport, RawDisplay, RawSupport, TransportError, VcpReading};
 use crate::util::{
     clamp_percent, now_rfc3339, percent_to_raw, platform_info, raw_to_percent, stable_display_id,
 };
@@ -24,7 +24,6 @@ use crate::util::{
 /// handler on LG-class firmware, so this delay is intentional and must not be
 /// replaced by a short retry loop.
 const INPUT_SETTLE: Duration = Duration::from_millis(1_500);
-const RAW_SETTLE: Duration = Duration::from_millis(220);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickAction {
@@ -367,6 +366,7 @@ impl<T: DdcTransport> DisplayService<T> {
             }
         }
 
+        let mut lost_readback = false;
         if let Some(Ok(value)) = &readback {
             if input_accepted(&self.displays[index].profile, input_id, *value) {
                 return Ok(self.finish_switch(
@@ -383,19 +383,27 @@ impl<T: DdcTransport> DisplayService<T> {
                 describe_input(&self.displays[index].profile, *value)
             );
         } else if let Some(Err(error)) = &readback {
-            // The monitor may have switched away and stopped answering DDC.
-            log::info!(
-                "Post-switch input readback unavailable: {error}; link={:?}; assuming switch succeeded",
-                self.transport
-                    .link_online(&self.displays[index].handle)
-            );
-            return Ok(self.finish_switch(
-                index,
+            let check = self.verify_after_lost_readback(
+                display_id,
                 input_id,
-                &input_label,
-                &selector,
-                &used_transport,
-            ));
+                verify_code,
+                &self.displays[index].profile,
+            );
+            log::info!(
+                "Post-switch input readback unavailable: {error}; fresh-handle check={check:?}"
+            );
+            match check {
+                FreshCheck::NotSwitched(_) => lost_readback = true,
+                FreshCheck::Switched | FreshCheck::Unknown => {
+                    return Ok(self.finish_switch(
+                        index,
+                        input_id,
+                        &input_label,
+                        &selector,
+                        &used_transport,
+                    ));
+                }
+            }
         }
 
         let fallback = selector.raw_fallback().cloned();
@@ -405,8 +413,21 @@ impl<T: DdcTransport> DisplayService<T> {
                 self.last_used = Some(display_id.to_string());
                 return Err(AppError::switch_failed(&error));
             }
+            if lost_readback {
+                self.displays[index].snapshot = None;
+                self.last_used = Some(display_id.to_string());
+                return Err(AppError::new(
+                    "switch_unconfirmed",
+                    format!(
+                        "已向显示器发送切换到{input_label}的命令，但回读失败，且重新枚举后仍能读到本机输入。"
+                    ),
+                )
+                .with_hint(
+                    "目标主机可能没有输出信号，或显示器已自动切回；确认目标接口有活动信号后刷新显示器列表再试。",
+                ));
+            }
             let Some(value) = readback.as_ref().and_then(|result| result.as_ref().ok()) else {
-                unreachable!("a failed readback returns early");
+                unreachable!("a failed readback is handled above");
             };
             log::warn!(
                 "Input switch unconfirmed: wrote 0x{:04X} but read 0x{value:04X}",
@@ -442,51 +463,152 @@ impl<T: DdcTransport> DisplayService<T> {
             fallback.value,
             fallback.source_address
         );
-        let fallback_result = {
-            let transport = &self.transport;
-            let display = &mut self.displays[index];
-            write_raw_selector(transport, &mut display.handle, &fallback)
-        };
-        if let Err(error) = fallback_result {
-            log::warn!("Raw I2C fallback failed for {display_id}: {error}");
-            self.displays[index].snapshot = None;
-            self.last_used = Some(display_id.to_string());
-            return Err(AppError::switch_failed(&error).with_hint(
-                "标准 DDC/CI 与原始 I2C 均写入失败。确认目标接口已连接信号源，并检查显卡驱动是否正常。",
-            ));
-        }
-
         used_transport = format!(
             "raw:{}",
             raw_support.backend.as_deref().unwrap_or("unknown")
         );
-        std::thread::sleep(RAW_SETTLE);
-        let fallback_readback = {
-            let transport = &self.transport;
-            let display = &mut self.displays[index];
-            read_input_value(transport, &mut display.handle, verify_code)
-        };
-        match fallback_readback {
-            Ok(value) if input_accepted(&self.displays[index].profile, input_id, value) => {
-                Ok(self.finish_switch(index, input_id, &input_label, &selector, &used_transport))
-            }
-            Ok(value) => {
-                let current = describe_input(&self.displays[index].profile, value);
-                let reason = format!(
-                    "已尝试标准 DDC/CI 与原始 I2C（VCP 0x{:02X} @0x{:02X}），显示器仍停留在 {current}。",
-                    fallback.vcp_code, fallback.source_address
-                );
-                log::warn!("Input switch ignored after raw fallback: {reason}");
-                Err(self.mark_input_unsupported(index, input_id, &input_label, reason))
-            }
-            Err(error) => {
-                // Switching to another host usually removes DDC from this host.
+
+        // Some LG firmware ignores the first vendor input command, and the panel
+        // can take as long as the standard path to settle. Retry once when the
+        // readback still shows the old input.
+        const RAW_ATTEMPTS: usize = 2;
+        let mut last_value = None;
+        for attempt in 1..=RAW_ATTEMPTS {
+            if attempt > 1 {
                 log::info!(
-                    "Post-raw-fallback readback unavailable: {error}; assuming switch succeeded"
+                    "Retrying raw I2C fallback for {display_id} (attempt {attempt}/{RAW_ATTEMPTS})"
                 );
-                Ok(self.finish_switch(index, input_id, &input_label, &selector, &used_transport))
+            }
+            let fallback_result = {
+                let transport = &self.transport;
+                let display = &mut self.displays[index];
+                write_raw_selector(transport, &mut display.handle, &fallback)
+            };
+            if let Err(error) = fallback_result {
+                log::warn!("Raw I2C fallback failed for {display_id}: {error}");
+                self.displays[index].snapshot = None;
+                self.last_used = Some(display_id.to_string());
+                return Err(AppError::switch_failed(&error).with_hint(
+                    "标准 DDC/CI 与原始 I2C 均写入失败。确认目标接口已连接信号源，并检查显卡驱动是否正常。",
+                ));
+            }
+
+            std::thread::sleep(self.input_settle);
+            let fallback_readback = {
+                let transport = &self.transport;
+                let display = &mut self.displays[index];
+                read_input_value(transport, &mut display.handle, verify_code)
+            };
+            match fallback_readback {
+                Ok(value) if input_accepted(&self.displays[index].profile, input_id, value) => {
+                    return Ok(self.finish_switch(
+                        index,
+                        input_id,
+                        &input_label,
+                        &selector,
+                        &used_transport,
+                    ));
+                }
+                Ok(value) => {
+                    log::warn!(
+                        "Input switch ignored after raw fallback attempt {attempt}/{RAW_ATTEMPTS}: requested 0x{:04X}, still {}",
+                        selector.value(),
+                        describe_input(&self.displays[index].profile, value)
+                    );
+                    last_value = Some(value);
+                }
+                Err(error) => {
+                    let check = self.verify_after_lost_readback(
+                        display_id,
+                        input_id,
+                        verify_code,
+                        &self.displays[index].profile,
+                    );
+                    log::info!(
+                        "Post-raw-fallback readback unavailable: {error}; fresh-handle check={check:?}"
+                    );
+                    match check {
+                        FreshCheck::NotSwitched(value) => {
+                            log::warn!(
+                                "Raw fallback attempt {attempt}/{RAW_ATTEMPTS} did not switch: requested 0x{:04X}, still {}",
+                                selector.value(),
+                                describe_input(&self.displays[index].profile, value)
+                            );
+                            last_value = Some(value);
+                        }
+                        FreshCheck::Switched | FreshCheck::Unknown => {
+                            return Ok(self.finish_switch(
+                                index,
+                                input_id,
+                                &input_label,
+                                &selector,
+                                &used_transport,
+                            ));
+                        }
+                    }
+                }
             }
         }
+
+        let current = last_value
+            .map(|value| describe_input(&self.displays[index].profile, value))
+            .unwrap_or_else(|| "未知".into());
+        let reason = format!(
+            "已尝试标准 DDC/CI 与原始 I2C（VCP 0x{:02X} @0x{:02X}）{RAW_ATTEMPTS} 次，显示器仍停留在 {current}。",
+            fallback.vcp_code, fallback.source_address
+        );
+        log::warn!("Input switch ignored after raw fallback: {reason}");
+        Err(self.mark_input_unsupported(index, input_id, &input_label, reason))
+    }
+
+    /// Re-enumerate after a failed readback and read the input with a fresh handle.
+    ///
+    /// A failed read is not proof that the monitor switched: Windows can invalidate
+    /// the old handle after a display-mode change while the panel stays put. If a
+    /// fresh handle still reports another input, the switch did not happen.
+    fn verify_after_lost_readback(
+        &self,
+        display_id: &str,
+        input_id: &str,
+        verify_code: u8,
+        profile: &DisplayProfile,
+    ) -> FreshCheck {
+        if !self.transport.supports_readback_verification() {
+            return FreshCheck::Unknown;
+        }
+        let displays = match self.transport.enumerate() {
+            Ok(displays) => displays,
+            Err(error) => {
+                log::warn!("Fresh-handle verification could not enumerate displays: {error}");
+                return FreshCheck::Unknown;
+            }
+        };
+        for raw in displays {
+            if raw_display_id(&raw) != display_id {
+                continue;
+            }
+            let mut handle = raw.handle;
+            return match self.transport.read_vcp(&mut handle, verify_code) {
+                Ok(reading) if input_accepted(profile, input_id, reading.value) => {
+                    FreshCheck::Switched
+                }
+                Ok(reading) => {
+                    log::info!(
+                        "Fresh-handle verification read 0x{:04X}; monitor is still on this input",
+                        reading.value
+                    );
+                    FreshCheck::NotSwitched(reading.value)
+                }
+                Err(error) => {
+                    log::info!(
+                        "Fresh-handle verification read failed ({error}); display may have switched away"
+                    );
+                    FreshCheck::Unknown
+                }
+            };
+        }
+        log::info!("Fresh-handle verification: {display_id} is no longer enumerated");
+        FreshCheck::Unknown
     }
 
     fn finish_switch(
@@ -1351,6 +1473,25 @@ enum Feature {
     Volume,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FreshCheck {
+    Switched,
+    NotSwitched(u16),
+    Unknown,
+}
+
+fn raw_display_id<H>(raw: &RawDisplay<H>) -> String {
+    stable_display_id(
+        raw.vendor_id.as_deref(),
+        raw.model_id,
+        raw.model_name.as_deref(),
+        raw.serial_number.as_deref(),
+        raw.edid_serial,
+        &raw.backend,
+        &raw.native_id,
+    )
+}
+
 fn feature_state_from_value(
     capability: &RangeCapability,
     max: u16,
@@ -1600,11 +1741,13 @@ mod tests {
     struct FakeState {
         values: BTreeMap<u8, VcpReading>,
         fail_reads: std::collections::HashSet<u8>,
+        fail_next_reads: usize,
         fail_writes: std::collections::HashSet<u8>,
         ignored_writes: std::collections::HashSet<u8>,
         raw_available: bool,
         raw_fail_writes: bool,
         raw_ignored: bool,
+        raw_ignore_writes: usize,
         writes: Vec<(u8, u16)>,
         reads: Vec<u8>,
         raw_writes: Vec<(u8, u8, u16)>,
@@ -1612,6 +1755,7 @@ mod tests {
         capabilities: String,
         capabilities_fail: bool,
         link_online: Option<bool>,
+        verify_readback: bool,
     }
 
     impl FakeState {
@@ -1725,6 +1869,10 @@ mod tests {
             }])
         }
 
+        fn supports_readback_verification(&self) -> bool {
+            self.state.borrow().verify_readback
+        }
+
         fn read_vcp(
             &self,
             display: &mut Self::Handle,
@@ -1735,6 +1883,12 @@ mod tests {
             if state.fail_reads.contains(&code) {
                 return Err(TransportError::communication(format!(
                     "simulated read failure for 0x{code:02X}"
+                )));
+            }
+            if state.fail_next_reads > 0 {
+                state.fail_next_reads -= 1;
+                return Err(TransportError::communication(format!(
+                    "simulated transient read failure for 0x{code:02X}"
                 )));
             }
             state.values.get(&code).copied().ok_or_else(|| {
@@ -1829,6 +1983,10 @@ mod tests {
             if state.raw_ignored {
                 return Ok(());
             }
+            if state.raw_ignore_writes > 0 {
+                state.raw_ignore_writes -= 1;
+                return Ok(());
+            }
             let mapped = if code == 0xF4 {
                 match value {
                     0x90 => 0x11,
@@ -1918,6 +2076,56 @@ mod tests {
         assert_eq!(state.writes, vec![(0x60, 0x10)]);
         assert_eq!(state.raw_writes, vec![(0x50, 0xF4, 0xD1)]);
         assert_eq!(state.values[&0x60].value, 0x10);
+    }
+
+    #[test]
+    fn raw_fallback_retries_once_when_first_write_is_ignored() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.ignored_writes.insert(0x60);
+            state.raw_ignore_writes = 1;
+        }
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let snapshot = service.switch_input(&id, "typec").unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("typec"));
+        assert_eq!(
+            snapshot.current_input.transport.as_deref(),
+            Some("raw:nvapi")
+        );
+
+        let state = state.borrow();
+        assert_eq!(
+            state.raw_writes,
+            vec![(0x50, 0xF4, 0xD1), (0x50, 0xF4, 0xD1)]
+        );
+        assert_eq!(state.values[&0x60].value, 0x10);
+    }
+
+    #[test]
+    fn lost_readback_while_still_on_old_input_is_not_reported_as_success() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.ignored_writes.insert(0x60);
+            state.raw_ignored = true;
+            state.fail_next_reads = 1;
+            state.verify_readback = true;
+        }
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let error = service.switch_input(&id, "typec").unwrap_err();
+        assert_eq!(error.code, "input_unsupported");
+        assert!(error.message.contains("TypeC"));
+        assert!(
+            state.borrow().raw_writes.len() >= 2,
+            "the raw fallback must be attempted before giving up"
+        );
     }
 
     #[test]
