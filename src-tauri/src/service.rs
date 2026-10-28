@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::config::{self, AppPaths, UserConfig};
 use crate::error::AppError;
@@ -264,6 +265,54 @@ impl<T: DdcTransport> DisplayService<T> {
             self.displays[index].snapshot = None;
             self.last_used = Some(display_id.to_string());
             return Err(AppError::switch_failed(&error));
+        }
+
+        // A successful DDC write does not guarantee the panel changed: some
+        // displays ignore the value, and LG firmware may fall back when the
+        // target port has no signal. Confirm before claiming success so the UI
+        // never shows "TypeC" while the monitor stays on HDMI1.
+        let input_vcp_code = self.displays[index].profile.current_input_vcp_code;
+        let target_value = selector.value();
+        let observed = {
+            let transport = &self.transport;
+            let display = &mut self.displays[index];
+            let mut observed = None;
+            for delay_ms in [0u64, 500, 800] {
+                if delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+                match transport.read_vcp(&mut display.handle, input_vcp_code) {
+                    Ok(reading) => {
+                        observed = Some(reading.value);
+                        if reading.value == target_value {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        // Losing DDC usually means the display did switch.
+                        log::debug!("Could not confirm input switch: {error}");
+                        observed = None;
+                        break;
+                    }
+                }
+            }
+            observed
+        };
+        if let Some(value) = observed {
+            if value != target_value {
+                log::warn!(
+                    "Input switch unconfirmed: wrote 0x{target_value:04X} but read 0x{value:04X}"
+                );
+                self.displays[index].snapshot = None;
+                self.last_used = Some(display_id.to_string());
+                return Err(AppError::new(
+                    "switch_unconfirmed",
+                    format!("显示器未确认切换到{input_label}（当前输入值 0x{value:04X}）。"),
+                )
+                .with_hint(
+                    "确认目标接口已接入信号源；LG 部分固件会忽略 USB-C 切换或在无信号时自动切回。",
+                ));
+            }
         }
 
         self.last_used = Some(display_id.to_string());
@@ -1199,6 +1248,7 @@ mod tests {
         table_writes: Vec<(u8, u16, Vec<u8>)>,
         capabilities: String,
         capabilities_fail: bool,
+        sticky_input: bool,
     }
 
     impl FakeState {
@@ -1335,6 +1385,9 @@ mod tests {
                 )));
             }
             state.writes.push((code, value));
+            if state.sticky_input && code == 0x60 {
+                return Ok(());
+            }
             let maximum = state.values.get(&code).map_or(0, |entry| entry.maximum);
             state.values.insert(code, reading(value, maximum));
             Ok(())
@@ -1430,6 +1483,25 @@ mod tests {
         assert_eq!(error.code, "ddc_error");
         assert!(error.hint.is_some());
         assert!(state.borrow().writes.is_empty());
+    }
+
+    #[test]
+    fn switch_input_reports_unconfirmed_switch_and_refreshes() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+        state.borrow_mut().sticky_input = true;
+
+        let error = service.switch_input(&id, "hdmi1").unwrap_err();
+        assert_eq!(error.code, "switch_unconfirmed");
+        assert!(error.message.contains("HDMI1"));
+        assert!(error.hint.is_some());
+        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+
+        let snapshot = service.snapshot(&id, false).unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
+        assert_eq!(snapshot.current_input.raw_value, Some(0xD0));
     }
 
     #[test]

@@ -32,7 +32,7 @@ Tauri 适配层
   commands.rs   参数校验、spawn_blocking、事件发送
   app.rs        托盘、窗口、生命周期、平台策略
   shortcuts.rs  全局快捷键注册与动作分发
-  worker.rs     专用线程、请求队列、2 秒响应超时
+  worker.rs     专用线程、请求队列、4 秒响应超时
         │ Command / Response
 领域层
   service.rs    DisplayService：发现、快照、切换、读写、诊断
@@ -57,7 +57,7 @@ DDC 句柄在部分后端不是 `Send`，不能在 Tauri 的异步运行时里�
    `DisplayService<HardwareTransport>`。
 2. 每个请求是一个 `Job { command, reply }`，经 `mpsc` 串行进入该线程。硬件读写天然串行，
    避免同时向 I2C/WinAPI 发送多条指令导致总线拥塞。
-3. 调用方使用 `recv_timeout(2s)` 等待结果。超时返回 `AppError::timeout`，提示检查连接与唤醒状态。
+3. 调用方使用 `recv_timeout(4s)` 等待结果。超时返回 `AppError::timeout`，提示检查连接与唤醒状态；输入切换需要额外回读确认。
 4. Tauri 命令用 `spawn_blocking` 调用 `WorkerClient`，因此 UI 线程和异步调度器不会被阻塞。
 
 需要明确的语义：超时只放弃**调用方**的等待，操作系统层面的 DDC 调用可能仍在工作线程中完成。
@@ -102,7 +102,8 @@ seed = vendor | model_id | model_name | sn:<serial>       （优先）
 ## 6. 快照与能力探测
 
 `DisplayService` 对每台显示器缓存 `DisplaySnapshot`。缓存失效条件：输入切换、亮度/音量/静音写入失败、
-手动刷新、配置重载。正常读取直接返回缓存，保证空闲时不产生 DDC 流量。
+手动刷新、配置重载。正常读取直接返回缓存，保证空闲时不产生 DDC 流量。输入切换写入成功后会回读
+当前输入 VCP；若读到其他值，则使缓存失效并返回 `switch_unconfirmed`，避免界面显示假成功。
 
 首次快照依次读取：
 
@@ -196,10 +197,11 @@ UI 以内联错误条显示，不使用模态弹窗。主要错误码：
 | --- | --- | --- |
 | `no_displays` | 枚举为空 | 开启 DDC/CI、唤醒显示器、避免不支持 DDC 的扩展坞。 |
 | `display_not_found` | 目标 ID 不在线 | 刷新后重试。 |
-| `timeout` | worker 2 秒未返回 | 检查连接、唤醒显示器，稍后刷新。 |
+| `timeout` | worker 4 秒未返回 | 检查连接、唤醒显示器，稍后刷新。 |
 | `permission` | 系统拒绝访问 | 检查隐私/安全设置。 |
 | `unsupported` | 显示器不支持该 VCP 或配置禁用 | 调整配置或运行诊断。 |
 | `ddc_error` | 校验、I2C、协议错误 | 检查线缆 / KVM。 |
+| `switch_unconfirmed` | 写入成功但回读 `0x60` 仍非目标值 | 目标接口无信号、显示器自动回切或 LG USB-C 固件限制；改用 OSD 或检查信号源。 |
 | `invalid_input` | 输入 id 不在档案中 | 检查 `inputs`。 |
 | `invalid_config` | 配置文件无效 | 修正后重新加载。 |
 | `internal` | worker 退出等 | 重启应用并查看日志。 |
@@ -289,7 +291,7 @@ CLI 直接构造 `DisplayService`，不经过 Tauri，因此可在无桌面会�
 
 ## 15. 取舍与限制
 
-1. **单工作线程**：简单、无数据竞争，但一条慢指令会阻塞后续请求。2 秒超时把感知延迟限制在可接受范围；
+1. **单工作线程**：简单、无数据竞争，但一条慢指令会阻塞后续请求。4 秒超时把感知延迟限制在可接受范围；
    若未来需要并行，应按显示器分片而不是共享句柄。
 2. **切换后不读回**：避免主机失去信号时误判失败；代价是 UI 显示的是“预期输入”而非硬件回读值。
 3. **auto 能力探测**：能自动隐藏不存在的音频控件，但首次打开面板需要读多个 VCP，可能比纯静态配置慢；

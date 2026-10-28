@@ -12,7 +12,9 @@ use crate::transport::HardwareTransport;
 
 /// DDC/CI calls can block for a long time on flaky links. The UI must stay responsive,
 /// so every request is bounded and a timed-out job is left to finish on the worker.
-const REQUEST_TIMEOUT: Duration = Duration::from_millis(2_000);
+/// Input switching reads VCP 0x60 back to confirm the panel changed, which needs
+/// a little more headroom than a single read.
+const REQUEST_TIMEOUT: Duration = Duration::from_millis(4_000);
 
 pub enum Command {
     AppInfo,

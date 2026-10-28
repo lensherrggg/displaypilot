@@ -23,6 +23,7 @@ function el<T extends HTMLElement>(id: string): T {
 const ui = {
   shell: el<HTMLElement>("settings-shell"),
   close: el<HTMLButtonElement>("close-settings"),
+  quitNote: el<HTMLElement>("quit-note"),
   aboutLine: el<HTMLElement>("about-line"),
   banner: el<HTMLElement>("config-banner"),
   bannerMessage: el<HTMLElement>("config-message"),
@@ -497,7 +498,8 @@ function quitApp(): void {
     showToast("浏览器预览模式不会退出应用");
     return;
   }
-  if (!window.confirm("退出 DisplayPilot？托盘图标将消失。")) {
+  const target = isMac ? "菜单栏图标" : "托盘图标";
+  if (!window.confirm(`退出 DisplayPilot？${target}将消失。`)) {
     return;
   }
   void api("quit_app").catch((error) => {
@@ -571,5 +573,8 @@ async function bindEvents(): Promise<void> {
 }
 
 ui.preview.hidden = isTauri;
+ui.quitNote.textContent = isMac
+  ? "退出后菜单栏图标消失；重新打开应用即可恢复。"
+  : "退出后托盘图标消失；重新启动即可恢复。";
 void bindEvents();
 void load();
