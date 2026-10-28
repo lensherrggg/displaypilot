@@ -11,7 +11,7 @@ DisplayPilot 是一个跨平台的菜单栏 / 系统托盘小工具，用 DDC/CI
 - **可诊断**：复制包含显示器身份、VCP 读数与能力字符串的报告，便于定位固件差异。
 - **命令行兜底**：图形界面之外保留 `list / switch / brightness / volume / mute / diagnose / config` 子命令。
 
-> 当前版本 **0.2.3**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
+> 当前版本 **0.2.4**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
 > （LG HDR 4K）上完成菜单栏、DDC/CI 读取与真实写入验证。其他显示器仍需按测试清单验收。
 
 ## 界面
@@ -248,7 +248,7 @@ npm run check          # 以上全部
 
 ## 版本管理
 
-- 当前版本 **0.2.3**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
+- 当前版本 **0.2.4**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
 - `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（以及 `Cargo.lock`）由脚本同步。
 - 发版步骤：`npm run version:set -- 0.2.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
 - 每次发布打 `v<version>` 标签。详细规则见 **[docs/VERSIONING.md](docs/VERSIONING.md)**。
