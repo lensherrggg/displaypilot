@@ -7,6 +7,7 @@ pub mod error;
 pub mod logging;
 pub mod models;
 pub mod profile;
+pub mod raw_i2c;
 pub mod service;
 pub mod shortcuts;
 pub mod state;

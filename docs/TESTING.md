@@ -22,13 +22,13 @@ npm run check          # 版本 + 前端构建 + Rust 测试 + fmt/clippy
 | `npm run check:rust` | `cargo fmt --check` + `cargo clippy --all-targets -D warnings`。 |
 | `npm run tauri build` | 生成 Windows/macOS 可执行文件与安装包。 |
 
-### 0.1.0 自动化结果（Windows 10.0.22631 x64）
+### 0.2.0 自动化结果（Windows 10.0.22631 x64）
 
 | 检查 | 结果 |
 | --- | --- |
-| `npm run check:version` | 通过：0.1.0 三处清单、Cargo.lock 与 CHANGELOG 一致。 |
+| `npm run check:version` | 通过：0.2.0 三处清单、Cargo.lock 与 CHANGELOG 一致。 |
 | `npm run build` | 通过：两个页面与资源产出到 `dist/`。 |
-| `npm run test:rust` | 通过：30 passed / 0 failed。 |
+| `npm run test:rust` | 通过：44 passed / 0 failed。 |
 | `npm run check:rust` | 通过：格式无差异，Clippy 无警告。 |
 | `npm run tauri build` | 见下方“构建验证”；以实际产物为准。 |
 
@@ -37,8 +37,9 @@ npm run check          # 版本 + 前端构建 + Rust 测试 + fmt/clippy
 | 模块 | 覆盖点 |
 | --- | --- |
 | `config` | 默认配置生成与解析、非法 schema 降级、空快捷键、snake_case TOML 与 camelCase IPC 往返。 |
-| `profile` | 内置 LG 匹配、`model_name_any` + 后端匹配、支持状态布尔/auto、优先级、未知显示器回退、覆盖深合并与数组替换、重复 id 拒绝。 |
-| `service` | 显示器识别与状态读取、输入切换写入与快照更新、失败提示与缓存失效、亮度百分比缩放、音量 auto 隐藏、静音反转、通用档案回退、快捷键步进、诊断内容、无显示器错误。 |
+| `profile` | 内置 LG 匹配与 `raw_fallback` 值、`raw` 选择器解析、`model_name_any` + 后端匹配、支持状态布尔/auto、优先级、未知显示器回退、覆盖深合并与数组替换、重复 id 拒绝。 |
+| `raw_i2c` | 标准 / 备用源地址的 DDC/CI 封包与回复校验、损坏校验和拒绝、VCP 不支持结果码。 |
+| `service` | 显示器识别与状态读取、输入切换写入与快照更新、标准写入被忽略后的原始 I2C 回退、回退不可用 / 双传输失败后的端口不支持标记与清除、失败提示与缓存失效、亮度百分比缩放、音量 auto 隐藏、静音反转、通用档案回退、快捷键步进、诊断内容、无显示器错误。 |
 | `util` | 稳定 ID 优先序列号并能回落路径、通配大小写不敏感、百分比映射与四舍五入。 |
 
 测试使用 `FakeTransport` 维护内存 VCP 表，因此不触碰真实 I2C/WinAPI，可在 CI 和无显示器环境运行。
@@ -63,6 +64,7 @@ npm run dev
 
 - [ ] 面板 360×620，无横向滚动；窗口较矮时内容区可滚动，底部状态行保持可见。
 - [ ] 输入源当前项有对勾与 `aria-label`；点击后出现“切换中…”，完成后更新当前项。
+- [ ] 不支持的端口按钮为虚线禁用状态，`title` / `aria-label` 显示原因；诊断报告列出同一原因。
 - [ ] 亮度/音量拖动时数值即时变化，短暂延迟后显示“已保存”/状态更新。
 - [ ] 音量不支持时控件禁用并显示原因；关闭“显示不支持的音频”后该区域隐藏。
 - [ ] 复制诊断出现 toast；剪贴板内容包含版本、显示器、VCP 与能力字符串。
@@ -133,9 +135,22 @@ npm run tauri dev
 - [ ] 目标接口无信号时返回可操作错误，面板恢复可用，不长期卡在“切换中…”。
 - [ ] 切换到另一台主机后，在原主机再次操作会得到连接中断/失败提示（符合 DDC 限制）。
 - [ ] 输入码与实际接口一一对应：27UL850 报告 `11/12/0F/10`，部分 LG 固件使用 `0x90/0x91/0xD0/0xD1`；不一致时按配置文档覆盖。
-- [ ] 被显示器忽略的写入不会假装成功：面板显示“显示器没有接受切换”，并在约 120ms 回读后恢复原输入状态。
-- [ ] Windows + 27UL850 切 USB-C 预期返回 `switch_ignored`（该固件需要厂商专用寻址）；改用 HDMI / DP 连接后切换正常。
-- [ ] `displaypilot switch dp --display 1` 与面板行为一致。
+- [ ] 被显示器忽略的标准写入会在约 120ms 回读后触发原始 I2C 回退；成功后 `currentInput.transport` 为 `raw:<后端>`。
+- [ ] Windows + NVIDIA + 27UL850 切 USB-C：标准 `0x10` 被忽略后，NVAPI 发送 `0xF4=0xD2 @0x50`，显示器切换到另一台主机。
+- [ ] Windows + AMD / Intel 或 macOS / Linux：需要厂商专用寻址的端口标记为“不支持”（`input_unsupported`），按钮禁用并显示原因，不假装成功。
+- [ ] 原始 I2C 与标准 DDC 都失败时，端口进入运行时“不支持”状态；重新插拔或成功切换后标记清除。
+- [ ] `displaypilot switch dp --display 1` 与面板行为一致；`list` / `diagnose` 显示原始 I2C 后端与每个端口的传输方式。
+
+### 4.2.1 原始 I2C 后端（Windows / NVIDIA）
+
+- [x] 已验证 `displaypilot list` 在 LG 27UL850 上显示“原始 I2C：可用（nvapi）”。
+- [x] 已验证 NVAPI 读取 `0xF4 @0x50`、`0x60 @0x50`、`0xF4 @0x51`、`0x60 @0x51` 均返回有效 DDC/CI 回复
+      （`0xF4` 值为 7，`0x60` 值为 `0x0F`），说明 Windows 可以响应厂商专用源地址。
+- [x] 已验证原始 I2C 写入：通过 NVAPI 将当前亮度值原样写回（画面无变化），200ms 后回读一致，
+      确认 `NVAPI_I2CWrite` 与 DDC/CI 写封包可用。
+- [ ] 待现场验收：`0xF4 = 0xD2` 会把显示器切到另一台主机，需确认另一台主机已接 USB-C 且能从
+      OSD 恢复后再执行；切换后原主机 DDC 消失属于预期。
+- [ ] AMD / Intel / macOS / Linux 没有可用的原始 I2C 实现，应看到明确不可用原因，而不是静默失败。
 
 ### 4.3 亮度
 
@@ -180,8 +195,9 @@ npm run tauri dev
 
 ## 7. 诊断与日志
 
-- [ ] 「复制诊断」内容包含：应用/OS/架构、生成时间、显示器身份、档案匹配、当前输入、亮度/音量/静音、
-      能力字符串、`0x60/0x10/0x62/0x8D/0xDF` 读取结果与提示。
+- [ ] 「复制诊断」内容包含：应用/OS/架构、生成时间、显示器身份、档案匹配、当前输入及其传输方式、
+      亮度/音量/静音、原始 I2C 可用性与后端、每个输入的支持状态与原因、能力字符串、
+      `0x60/0x10/0x62/0x8D/0xDF` 读取结果与提示。
 - [ ] 读取失败项在报告中显示错误文本，而不是静默缺失。
 - [ ] 剪贴板不可用时显示“复制失败”，并说明权限问题。
 - [ ] 日志记录枚举、档案匹配、输入切换的 VCP/offset/value、失败原因、快捷键注册。
@@ -194,7 +210,7 @@ npm run tauri dev
 
 | 命令 | 预期 |
 | --- | --- |
-| `displaypilot list` | 显示版本、平台、显示器数量、id、名称、档案、输入源。 |
+| `displaypilot list` | 显示版本、平台、显示器数量、id、名称、档案、原始 I2C 后端、每个输入源的传输方式 / 支持状态。 |
 | `displaypilot list --json` | 合法 JSON；无显示器时退出码 2。 |
 | `displaypilot switch dp` | 切换并输出结果；无效输入退出码 1。 |
 | `displaypilot switch dp --display 1` | 指定显示器。 |
@@ -205,7 +221,7 @@ npm run tauri dev
 | `displaypilot diagnose --json` | 完整诊断 JSON。 |
 | `displaypilot config` | 路径、配置、档案、快捷键。 |
 | `displaypilot --help` | 帮助，退出码 0。 |
-| `displaypilot --version` | `displaypilot 0.1.0`。 |
+| `displaypilot --version` | `displaypilot 0.2.0`。 |
 | `displaypilot bogus` | 参数错误，退出码 64。 |
 | `displaypilot --help --json` | 帮助优先，退出码 0。 |
 
@@ -214,7 +230,7 @@ CLI 失败时，`--json` 模式下错误以 JSON 写到 stderr，标准输出保
 ## 9. 性能与资源
 
 - [ ] 空闲（面板隐藏）时 CPU 接近 0，无周期性 DDC 读取；快照只在操作/刷新/重载后更新。
-- [ ] 首次显示面板的读取在 2 秒内完成或返回超时错误。
+- [ ] 首次显示面板的读取在 20 秒内完成；若超时，界面显示“显示器响应超时”而不是“未发现显示器”。
 - [ ] 连续快速拖动滑块不会堆积大量写入；停止 130ms 后只发送最终值。
 - [ ] 连续点击不同输入不会并发写 DDC；忙碌状态阻止重复提交。
 - [ ] 长时间运行后内存与日志大小稳定（日志轮转生效）。
@@ -238,7 +254,7 @@ npm run tauri build
 | 项 | 状态 |
 | --- | --- |
 | MSVC / WebView2 环境 | 本机 Windows 10.0.22631 x64 |
-| `cargo test` | 30/30 通过 |
+| `cargo test` | 44/44 通过 |
 | `cargo clippy -D warnings` | 通过 |
 | `npm run build` | 通过 |
 | Tauri release 构建 | 通过：`src-tauri/target/release/displaypilot.exe`（设置窗口 URL 修复后重新构建）。安装包打包阶段因 WiX 下载超时未完成，可用 `npm run tauri build -- --no-bundle` 重现可执行文件，或在网络可用时重试完整打包。 |

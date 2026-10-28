@@ -1,6 +1,6 @@
 [package]
 name = "displaypilot"
-version = "0.1.1"
+version = "0.2.0"
 description = "Cross-platform DDC/CI display input, brightness and audio control"
 authors = ["DisplayPilot contributors"]
 edition = "2021"
@@ -33,6 +33,14 @@ toml_edit = "0.22"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 window-vibrancy = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nvapi-sys = { version = "0.1.3", default-features = false }
+windows-sys = { version = "0.59", features = [
+    "Win32_Devices_Display",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }
 
 [dev-dependencies]
 tempfile = "3"

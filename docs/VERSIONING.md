@@ -160,7 +160,13 @@ CHANGELOG 说明，而不是强制移动标签。
   并在 CHANGELOG 与迁移说明中写清楚。
 - `0.1.0` 的已知限制（macOS 未实机验收、厂商输入值差异等）见 [CHANGELOG](../CHANGELOG.md)。
 
-## 8. 常见问题
+## 8. 0.2.0 基线
+
+- `0.2.0` 新增可插拔原始 I2C 后端与标准 DDC/CI 自动回退；配置仍为 `schema_version = 1`。
+- 新增的 `raw_fallback` / `type = "raw"` 字段是可选的，旧配置继续有效。
+- 原始 I2C 目前仅 Windows + NVIDIA（NVAPI）可用；其他平台返回明确的不可用原因。
+
+## 9. 常见问题
 
 **版本检查失败：`Version mismatch detected`**  
 说明三处清单不一致。运行 `npm run version:set -- <目标版本>` 重新同步，再补 CHANGELOG。

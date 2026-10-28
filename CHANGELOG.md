@@ -5,6 +5,33 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
+### 新增
+
+- 可插拔原始 I2C 传输后端 `RawI2cDevice`，可在 GPU I2C 总线上向指定 DDC 源地址写入标准 DDC/CI 数据包。
+- Windows 上实现 NVAPI 原始 I2C 后端：按 GDI 显示器设备名与 NVAPI 输出映射，支持 `0x50` / `0x51` 源地址读写；映射不确定时返回明确原因。
+- 输入选择器新增 `raw_fallback` 与 `type = "raw"`；标准 DDC/CI 写入失败、被忽略或回读不匹配时自动降级到原始 I2C。
+- LG 27UL850 内置档案为四个输入配置 `0xF4` 回退值（HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD2`），用于厂商专用寻址。
+- 每个输入源暴露支持状态、实际传输方式与失败原因；标准与原始 I2C 都失败时返回 `input_unsupported`，UI 禁用对应端口，不再静默失败。
+- `list` / `diagnose` 输出原始 I2C 后端可用性、每个端口的传输方式与支持状态；当前输入的传输方式写入快照与诊断报告。
+
+### 变更
+
+- 输入切换改为“写入 → 回读确认 → 原始 I2C 回退 → 再次回读”；切换到另一台主机导致 DDC 消失时视为成功，避免误报。
+- 原 `switch_ignored` 错误由自动回退或 `input_unsupported` 取代。
+
+### 验证
+
+- NVAPI 在 Windows 上读取 `0xF4 @0x50` 与 `0x60 @0x50` 均返回有效 DDC/CI 回复；`displaypilot list` 显示 LG 27UL850 的原始 I2C 后端可用。
+- 原始 I2C 写入路径已验证：通过 NVAPI 重写当前亮度值并回读一致（未改变画面），确认 `NVAPI_I2CWrite` 与 DDC/CI 封包可用。
+- 单元测试增至 44 项，覆盖回退成功、回退不可用、双传输失败后的端口标记与清除。
+
+### 已知限制
+
+- 原始 I2C 仅 Windows + NVIDIA（NVAPI）可用；AMD / Intel 没有公开等价接口，macOS（IOAVService）与 Linux（i2c-dev）尚未实现，相关端口会明确标记为不支持。
+- `0xF4 = 0xD2`（切到 USB-C 主机）会移动 DDC 访问，尚未在实机上执行；需要另一台主机已接 USB-C 且可从 OSD 恢复时再验证。
+
 ## [0.1.1] - 2026-10-28
 
 ### 修复

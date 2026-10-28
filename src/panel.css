@@ -388,6 +388,11 @@
   opacity: 0.5;
 }
 
+.input-button[data-unsupported="true"] {
+  border-style: dashed;
+  opacity: 0.45;
+}
+
 .input-button .spinner {
   width: 12px;
   height: 12px;

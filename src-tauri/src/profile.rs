@@ -273,11 +273,31 @@ pub enum VendorWriteMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RawSelector {
+    pub vcp_code: u8,
+    pub value: u16,
+    pub source_address: u8,
+}
+
+impl Default for RawSelector {
+    fn default() -> Self {
+        Self {
+            vcp_code: 0xF4,
+            value: 0,
+            source_address: 0x50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputSelector {
     Standard {
         vcp_code: u8,
         value: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_fallback: Option<RawSelector>,
     },
     Vendor {
         vcp_code: u8,
@@ -286,20 +306,64 @@ pub enum InputSelector {
         data_address: u16,
         #[serde(default)]
         write_mode: VendorWriteMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_fallback: Option<RawSelector>,
     },
+    Raw {
+        vcp_code: u8,
+        value: u16,
+        #[serde(default = "default_raw_source_address")]
+        source_address: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verify_value: Option<u16>,
+    },
+}
+
+fn default_raw_source_address() -> u8 {
+    0x50
 }
 
 impl InputSelector {
     pub fn vcp_code(&self) -> u8 {
         match self {
-            Self::Standard { vcp_code, .. } | Self::Vendor { vcp_code, .. } => *vcp_code,
+            Self::Standard { vcp_code, .. }
+            | Self::Vendor { vcp_code, .. }
+            | Self::Raw { vcp_code, .. } => *vcp_code,
         }
     }
 
+    /// Value written to the display.
     pub fn value(&self) -> u16 {
         match self {
-            Self::Standard { value, .. } | Self::Vendor { value, .. } => *value,
+            Self::Standard { value, .. } | Self::Vendor { value, .. } | Self::Raw { value, .. } => {
+                *value
+            }
         }
+    }
+
+    /// Value expected when reading `current_input_vcp_code` back.
+    pub fn verify_value(&self) -> Option<u16> {
+        match self {
+            Self::Standard { value, .. } | Self::Vendor { value, .. } => Some(*value),
+            Self::Raw {
+                value,
+                verify_value,
+                ..
+            } => Some(verify_value.unwrap_or(*value)),
+        }
+    }
+
+    pub fn raw_fallback(&self) -> Option<&RawSelector> {
+        match self {
+            Self::Standard { raw_fallback, .. } | Self::Vendor { raw_fallback, .. } => {
+                raw_fallback.as_ref()
+            }
+            Self::Raw { .. } => None,
+        }
+    }
+
+    pub fn is_raw(&self) -> bool {
+        matches!(self, Self::Raw { .. })
     }
 }
 
@@ -345,7 +409,7 @@ impl DisplayProfile {
     pub fn input_for_value(&self, value: u16) -> Option<&InputSource> {
         self.inputs
             .iter()
-            .find(|input| input.selector.value() == value)
+            .find(|input| input.selector.verify_value() == Some(value))
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -568,6 +632,52 @@ mod tests {
     }
 
     #[test]
+    fn lg_inputs_define_raw_i2c_fallbacks() {
+        let catalog = ProfileCatalog::load(&UserConfig::default()).unwrap();
+        let (profile, matched) = catalog.resolve(&identity("LG 27UL850-W"));
+        assert!(matched);
+
+        let typec = profile.input("typec").unwrap();
+        let raw = typec.selector.raw_fallback().expect("typec raw fallback");
+        assert_eq!(raw.vcp_code, 0xF4);
+        assert_eq!(raw.value, 0xD2);
+        assert_eq!(raw.source_address, 0x50);
+        assert_eq!(
+            profile
+                .input("dp")
+                .unwrap()
+                .selector
+                .raw_fallback()
+                .unwrap()
+                .value,
+            0xD0
+        );
+        assert!(profile
+            .input("hdmi2")
+            .unwrap()
+            .selector
+            .raw_fallback()
+            .is_some());
+    }
+
+    #[test]
+    fn raw_selector_parses_source_and_verify_value() {
+        let selector: InputSelector = toml::from_str(
+            r#"
+type = "raw"
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
+verify_value = 0x10
+"#,
+        )
+        .unwrap();
+        assert!(selector.is_raw());
+        assert_eq!(selector.value(), 0xD2);
+        assert_eq!(selector.verify_value(), Some(0x10));
+    }
+
+    #[test]
     fn lg_profile_matches_capability_model_without_edid() {
         let catalog = ProfileCatalog::load(&UserConfig::default()).unwrap();
         let mut identity = identity("UL850");
@@ -642,6 +752,7 @@ value = 0xD0
                 selector: InputSelector::Standard {
                     vcp_code: 0x60,
                     value: 0x0F,
+                    raw_fallback: None,
                 },
             }],
         });

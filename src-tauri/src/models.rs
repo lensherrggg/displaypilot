@@ -8,6 +8,10 @@ use crate::error::AppError;
 pub struct InputOption {
     pub id: String,
     pub label: String,
+    pub supported: bool,
+    pub transport: String,
+    pub reason: Option<String>,
+    pub hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +30,9 @@ pub struct DisplaySummary {
     pub inputs: Vec<InputOption>,
     pub input_switch_supported: bool,
     pub current_input_vcp_code: u8,
+    pub raw_i2c_available: bool,
+    pub raw_i2c_backend: Option<String>,
+    pub raw_i2c_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +50,7 @@ pub struct CurrentInputState {
     pub input_id: Option<String>,
     pub label: Option<String>,
     pub raw_value: Option<u16>,
+    pub transport: Option<String>,
     pub read_error: Option<String>,
 }
 
@@ -123,6 +131,9 @@ pub struct DiagnosticDisplay {
     pub profile_label: String,
     pub profile_matched: bool,
     pub capabilities_error: Option<String>,
+    pub raw_i2c_available: bool,
+    pub raw_i2c_backend: Option<String>,
+    pub raw_i2c_reason: Option<String>,
     pub inputs: Vec<DiagnosticInput>,
 }
 
@@ -132,6 +143,10 @@ pub struct DiagnosticInput {
     pub id: String,
     pub label: String,
     pub selector: String,
+    pub supported: bool,
+    pub transport: String,
+    pub reason: Option<String>,
+    pub hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

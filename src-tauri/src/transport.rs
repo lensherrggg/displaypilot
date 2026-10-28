@@ -2,6 +2,9 @@ use std::fmt;
 
 use ddc_hi::{Ddc, DdcTable, Display as HiDisplay};
 
+pub use crate::raw_i2c::RawSupport;
+use crate::raw_i2c::{self, RawI2cDevice};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportErrorKind {
     Unsupported,
@@ -102,6 +105,7 @@ pub struct RawDisplay<H> {
     pub edid_serial: Option<u32>,
     pub edid: Option<Vec<u8>>,
     pub capabilities_error: Option<String>,
+    pub raw_support: RawSupport,
 }
 
 pub trait DdcTransport {
@@ -127,6 +131,33 @@ pub trait DdcTransport {
     ) -> Result<(), TransportError>;
 
     fn capabilities_string(&self, display: &mut Self::Handle) -> Result<String, TransportError>;
+
+    /// Read a VCP feature over the raw GPU I2C bus. Backends that cannot send
+    /// arbitrary DDC source addresses return `Unsupported`.
+    fn raw_read(
+        &self,
+        _display: &mut Self::Handle,
+        _source: u8,
+        _code: u8,
+    ) -> Result<VcpReading, TransportError> {
+        Err(TransportError::unsupported(
+            "当前传输后端不支持原始 I2C 读取。",
+        ))
+    }
+
+    /// Write a VCP feature over the raw GPU I2C bus with an explicit DDC source
+    /// address (`0x50` for alternate LG commands, `0x51` for standard).
+    fn raw_write(
+        &self,
+        _display: &mut Self::Handle,
+        _source: u8,
+        _code: u8,
+        _value: u16,
+    ) -> Result<(), TransportError> {
+        Err(TransportError::unsupported(
+            "当前传输后端不支持原始 I2C 写入。",
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -134,6 +165,8 @@ pub struct HardwareTransport;
 
 pub struct HardwareDisplay {
     inner: HiDisplay,
+    raw_device: Option<Box<dyn RawI2cDevice>>,
+    raw_support: RawSupport,
 }
 
 impl DdcTransport for HardwareTransport {
@@ -186,8 +219,20 @@ impl DdcTransport for HardwareTransport {
                 edid_serial: info.serial,
                 edid: info.edid_data.clone(),
                 capabilities_error,
-                handle: HardwareDisplay { inner: display },
+                raw_support: RawSupport::default(),
+                handle: HardwareDisplay {
+                    inner: display,
+                    raw_device: None,
+                    raw_support: RawSupport::default(),
+                },
             });
+        }
+
+        let attachments = raw_i2c::attach(result.len());
+        for (display, attachment) in result.iter_mut().zip(attachments) {
+            display.raw_support = attachment.support.clone();
+            display.handle.raw_support = attachment.support;
+            display.handle.raw_device = attachment.device;
         }
 
         Ok(result)
@@ -245,6 +290,43 @@ impl DdcTransport for HardwareTransport {
             .trim_end_matches('\0')
             .trim()
             .to_string())
+    }
+
+    fn raw_read(
+        &self,
+        display: &mut Self::Handle,
+        source: u8,
+        code: u8,
+    ) -> Result<VcpReading, TransportError> {
+        let device = display.raw_device.as_ref().ok_or_else(|| {
+            TransportError::unsupported(
+                display
+                    .raw_support
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "原始 I2C 后端不可用。".into()),
+            )
+        })?;
+        device.read(source, code)
+    }
+
+    fn raw_write(
+        &self,
+        display: &mut Self::Handle,
+        source: u8,
+        code: u8,
+        value: u16,
+    ) -> Result<(), TransportError> {
+        let device = display.raw_device.as_ref().ok_or_else(|| {
+            TransportError::unsupported(
+                display
+                    .raw_support
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "原始 I2C 后端不可用。".into()),
+            )
+        })?;
+        device.write(source, code, value)
     }
 }
 

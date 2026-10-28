@@ -12,7 +12,11 @@ use crate::transport::HardwareTransport;
 
 /// DDC/CI calls can block for a long time on flaky links. The UI must stay responsive,
 /// so every request is bounded and a timed-out job is left to finish on the worker.
-const REQUEST_TIMEOUT: Duration = Duration::from_millis(2_000);
+/// Discovery and diagnostics chain several slow reads (capabilities, 0x60/0x62/0x8D),
+/// so they need a much larger budget than a single feature access.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
+const DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub enum Command {
     AppInfo,
@@ -67,6 +71,25 @@ pub enum Response {
 }
 
 impl Command {
+    fn timeout(&self) -> Duration {
+        match self {
+            Command::Bootstrap | Command::ListDisplays { .. } | Command::ReloadConfig => {
+                DISCOVERY_TIMEOUT
+            }
+            Command::Diagnostics { .. } => DIAGNOSTICS_TIMEOUT,
+            Command::AppInfo
+            | Command::SelectDisplay { .. }
+            | Command::Snapshot { .. }
+            | Command::SwitchInput { .. }
+            | Command::SetBrightness { .. }
+            | Command::SetVolume { .. }
+            | Command::ToggleMute { .. }
+            | Command::SetMute { .. }
+            | Command::QuickAction { .. }
+            | Command::ConfigInfo => DEFAULT_TIMEOUT,
+        }
+    }
+
     fn execute(
         self,
         service: &mut DisplayService<HardwareTransport>,
@@ -148,15 +171,16 @@ impl WorkerClient {
     }
 
     pub fn call(&self, command: Command) -> Result<Response, AppError> {
+        let timeout = command.timeout();
         let (reply, response) = mpsc::channel();
         self.sender
             .send(Job { command, reply })
             .map_err(|_| AppError::internal("显示器工作线程已退出，请重启 DisplayPilot。"))?;
 
-        match response.recv_timeout(REQUEST_TIMEOUT) {
+        match response.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
-                log::warn!("DDC request exceeded {REQUEST_TIMEOUT:?}");
+                log::warn!("DDC request exceeded {timeout:?}");
                 Err(AppError::timeout())
             }
             Err(RecvTimeoutError::Disconnected) => {

@@ -8,6 +8,7 @@ import type {
   DisplaySnapshot,
   DisplaySummary,
   FeatureValueState,
+  InputOption,
 } from "./types";
 
 function el<T extends HTMLElement>(id: string): T {
@@ -243,17 +244,30 @@ function toggleDisplayMenu(): void {
   }
 }
 
-function inputButton(input: { id: string; label: string }): HTMLButtonElement {
+function inputButton(input: InputOption): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "input-button";
   const isCurrent = state.snapshot?.currentInput.inputId === input.id;
   const isBusy = state.busyInputId === input.id;
+  const unavailable = !input.supported;
   button.setAttribute("aria-pressed", String(isCurrent));
-  button.setAttribute("aria-label", isCurrent ? `${input.label}（当前输入）` : `切换到 ${input.label}`);
+  button.setAttribute(
+    "aria-label",
+    unavailable
+      ? `${input.label}（不支持切换：${input.reason ?? "未知原因"}）`
+      : isCurrent
+        ? `${input.label}（当前输入）`
+        : `切换到 ${input.label}`,
+  );
+  button.dataset.unsupported = String(unavailable);
+  if (unavailable) {
+    const reason = input.reason ?? "该端口在当前 GPU 与平台上没有可用的切换通道。";
+    button.title = input.hint ? `${reason}\n${input.hint}` : reason;
+  }
 
   const switchSupported = state.snapshot?.display.inputSwitchSupported ?? true;
-  button.disabled = !switchSupported || state.busyInputId !== null;
+  button.disabled = !switchSupported || state.busyInputId !== null || unavailable;
 
   if (isBusy) {
     const spinner = document.createElement("span");
@@ -395,7 +409,14 @@ function renderSnapshot(snapshot: DisplaySnapshot): void {
   if (warnings) {
     setStatus(`更新于 ${formatTime(snapshot.probedAt)} · 部分状态不可用`, "warning");
   } else {
-    setStatus(`更新于 ${formatTime(snapshot.probedAt)} · ${snapshot.display.backend}`, "ok");
+    const raw =
+      snapshot.display.rawI2cAvailable && snapshot.display.rawI2cBackend
+        ? ` · 原始 I2C ${snapshot.display.rawI2cBackend}`
+        : "";
+    setStatus(
+      `更新于 ${formatTime(snapshot.probedAt)} · ${snapshot.display.backend}${raw}`,
+      "ok",
+    );
   }
 }
 
@@ -412,11 +433,12 @@ function renderEmpty(list: DisplayList | null, error?: AppError): void {
   ui.subtitle.textContent = "未发现显示器";
 
   const discovery = error ?? list?.discoveryError ?? null;
+  ui.subtitle.textContent = discovery?.code === "timeout" ? "显示器响应超时" : "未发现显示器";
   if (discovery) {
     ui.emptyMessage.textContent = discovery.hint
       ? `${discovery.message} ${discovery.hint}`
       : discovery.message;
-    setStatus("未发现可控制的显示器", "error");
+    setStatus(discovery.code === "timeout" ? "显示器响应超时" : "未发现可控制的显示器", "error");
   } else {
     ui.emptyMessage.textContent =
       "请确认显示器已唤醒，并在 OSD 中启用 DDC/CI。优先使用直连 HDMI、DP 或 Type-C。";
@@ -547,6 +569,15 @@ async function switchInput(inputId: string, inputLabel: string): Promise<void> {
     clearError();
   } catch (error) {
     const appError = normalizeError(error);
+    if (appError.code === "input_unsupported") {
+      try {
+        const list = await api<DisplayList>("list_displays", { force: false });
+        applyDisplayList(list);
+        await refreshSnapshot(true);
+      } catch {
+        // Keep the original actionable error visible.
+      }
+    }
     showError("无法切换输入源", appError);
   } finally {
     state.busyInputId = null;

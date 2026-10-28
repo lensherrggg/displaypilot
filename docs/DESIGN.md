@@ -1,6 +1,6 @@
 # DisplayPilot 设计说明
 
-本文描述 0.1.0 的实现结构、关键取舍与可扩展点。需求中的时序、验收条件与视觉约束在实现时统一下沉到
+本文描述 0.2.0 的实现结构、关键取舍与可扩展点。需求中的时序、验收条件与视觉约束在实现时统一下沉到
 “服务层串行执行 + 配置驱动 + 非模态错误”三条主线，避免把机型或平台差异散落在 UI 与硬件代码里。
 
 ## 1. 目标与非目标
@@ -32,7 +32,7 @@ Tauri 适配层
   commands.rs   参数校验、spawn_blocking、事件发送
   app.rs        托盘、窗口、生命周期、平台策略
   shortcuts.rs  全局快捷键注册与动作分发
-  worker.rs     专用线程、请求队列、2 秒响应超时
+  worker.rs     专用线程、请求队列、分级响应超时
         │ Command / Response
 领域层
   service.rs    DisplayService：发现、快照、切换、读写、诊断
@@ -41,6 +41,7 @@ Tauri 适配层
   error.rs      AppError：code / message / hint
 基础设施
   transport.rs  DdcTransport trait + HardwareTransport(ddc-hi)
+  raw_i2c.rs    RawI2cDevice trait + Windows NVAPI 实现、DDC/CI 封包
   config.rs     AppPaths、TOML 读取、默认配置、[general] 安全更新
   logging.rs    滚动文件日志与 panic 钩子
   util.rs       稳定 ID、通配、百分比换算、平台信息
@@ -57,7 +58,9 @@ DDC 句柄在部分后端不是 `Send`，不能在 Tauri 的异步运行时里�
    `DisplayService<HardwareTransport>`。
 2. 每个请求是一个 `Job { command, reply }`，经 `mpsc` 串行进入该线程。硬件读写天然串行，
    避免同时向 I2C/WinAPI 发送多条指令导致总线拥塞。
-3. 调用方使用 `recv_timeout(2s)` 等待结果。超时返回 `AppError::timeout`，提示检查连接与唤醒状态。
+3. 调用方使用 `recv_timeout` 等待结果，预算按命令分级：普通读写 10 秒、枚举 20 秒、诊断 30 秒。
+   冷启动枚举需要读取两次能力字符串（部分显示器单次约 1.5 秒），固定 2 秒会把正常设备误判为超时。
+   超时返回 `AppError::timeout`，提示检查连接与唤醒状态。
 4. Tauri 命令用 `spawn_blocking` 调用 `WorkerClient`，因此 UI 线程和异步调度器不会被阻塞。
 
 需要明确的语义：超时只放弃**调用方**的等待，操作系统层面的 DDC 调用可能仍在工作线程中完成。
@@ -150,14 +153,47 @@ vcp_code = 0xE0
 value = 0x0001
 data_address = 0x0010
 write_mode = "table"
+
+# 标准写入 + 原始 I2C 回退（LG 厂商专用寻址）
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x10
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
+
+# 原始 I2C 直写
+[profiles.inputs.selector]
+type = "raw"
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
+verify_value = 0x10
 ```
 
 `type = "vendor"` 只是语义标记，实际路径由 `write_mode` 决定：`vcp` 调 `set_vcp_feature`，
 `table` 调 `table_write` 并在 `data_address` 写入 `value.to_be_bytes()`。`WriteMode` 默认是 `table`，
 与部分厂商（如 LG）通过表写入切换输入的实现一致。
 
-切换成功后，快照的 `current_input` 直接用配置的 id/label/value 更新，不额外读回；这是因为切换后
-主机可能立即失去显示信号，读回并不可靠。下一次强制刷新仍会重新读取真实值。
+`raw_fallback` 与 `type = "raw"` 走 `RawI2cDevice`：后者由 GPU 驱动直接向指定 I2C 从地址
+发送 DDC/CI 数据包，因此能使用标准 API 无法指定的源地址（`0x50`）。Windows 上通过 NVAPI
+枚举 GPU 输出并映射到 `ddc-hi` 枚举出的显示器；映射不确定时该显示器返回不可用原因，而不是
+猜测。macOS / Linux 当前没有实现，统一返回明确的不可用原因。
+
+切换流程：
+
+1. 标准选择器（`standard` / `vendor`）先写入；
+2. 等待 120ms 后回读 `current_input_vcp_code`，匹配则成功；
+3. 写入失败、被忽略或回读不匹配时，若有 `raw_fallback` 且后端可用，则用原始 I2C 重写；
+4. 等待 220ms 后再次回读；匹配则成功；回读本身失败视为切换成功（切换到另一台主机后
+   DDC 通常会消失）；
+5. 两种传输都失败，或最终仍停留在原输入时，该输入被标记为运行时“不支持”，返回
+   `input_unsupported`，并在列表 / 诊断中附带原因。成功切换会清除该标记。
+
+回退是自动的，但不会掩盖结果：每次成功都会在 `current_input.transport` 记录实际使用的
+传输方式（`standard` 或 `raw:<backend>`），诊断报告同时给出每个输入的支持状态与原因。
 
 ## 8. 档案匹配与配置合并
 
@@ -192,11 +228,12 @@ UI 以内联错误条显示，不使用模态弹窗。主要错误码：
 | --- | --- | --- |
 | `no_displays` | 枚举为空 | 开启 DDC/CI、唤醒显示器、避免不支持 DDC 的扩展坞。 |
 | `display_not_found` | 目标 ID 不在线 | 刷新后重试。 |
-| `timeout` | worker 2 秒未返回 | 检查连接、唤醒显示器，稍后刷新。 |
+| `timeout` | worker 超时（普通 10s / 枚举 20s / 诊断 30s） | 检查连接、唤醒显示器，稍后刷新。 |
 | `permission` | 系统拒绝访问 | 检查隐私/安全设置。 |
 | `unsupported` | 显示器不支持该 VCP 或配置禁用 | 调整配置或运行诊断。 |
 | `ddc_error` | 校验、I2C、协议错误 | 检查线缆 / KVM。 |
 | `invalid_input` | 输入 id 不在档案中 | 检查 `inputs`。 |
+| `input_unsupported` | 标准与原始 I2C 都无法切换该端口，或后端不可用 | 查看端口原因；换用 NVIDIA 原始 I2C、其他接口或 OSD。 |
 | `invalid_config` | 配置文件无效 | 修正后重新加载。 |
 | `internal` | worker 退出等 | 重启应用并查看日志。 |
 
@@ -238,6 +275,7 @@ UI 以内联错误条显示，不使用模态弹窗。主要错误码：
 | 关注点 | Windows | macOS |
 | --- | --- | --- |
 | DDC 后端 | `ddc-winapi` | `ddc-macos` |
+| 原始 I2C | NVIDIA NVAPI（已实现并验证读取） | 未实现（IOAVService），返回不可用原因 |
 | 窗口材质 | CSS 半透明 + 背景模糊降级 | `window-vibrancy`（HudWindow），失败静默降级 |
 | 应用形态 | 托盘 + 跳过任务栏；GUI 启动时 `FreeConsole` | `Accessory` 策略、隐藏 Dock 图标 |
 | 日志 | `%LOCALAPPDATA%\DisplayPilot\logs` | `~/Library/Logs/DisplayPilot` |
@@ -252,8 +290,9 @@ CLI 与 GUI 共用同一套服务层，因此 Windows 上即使前端异常，�
 - 单文件 2MB，保留 3 个备份（`.1`–`.3`），启动时轮转；panic 钩子先写日志再调用原钩子。
 - 关键路径日志：枚举数量与设备字段、档案匹配结果、输入切换的 VCP/offset/value、失败原因、
   快捷键注册、配置重载。
-- 诊断报告包含：应用/OS 版本、生成时间、显示器身份、档案与是否精确匹配、当前输入、亮度/音量/静音、
-  能力读取错误、能力字符串、`0x60/0x10/0x62/0x8D/0xDF` 的 VCP 原始值、输入选择器描述和操作提示。
+- 诊断报告包含：应用/OS 版本、生成时间、显示器身份、档案与是否精确匹配、当前输入及其传输方式、
+  亮度/音量/静音、原始 I2C 可用性与后端、每个输入的支持状态 / 传输方式 / 原因、能力读取错误、
+  能力字符串、`0x60/0x10/0x62/0x8D/0xDF` 的 VCP 原始值、输入选择器描述和操作提示。
 - UI 的“复制诊断”在失败时会把错误信息也写入剪贴板，便于反馈问题。
 
 ## 13. CLI
@@ -265,7 +304,8 @@ CLI 直接构造 `DisplayService`，不经过 Tauri，因此可在无桌面会�
 
 ## 14. 测试策略
 
-- **领域单元测试**：`FakeTransport` 维护 VCP 状态表，覆盖档案匹配、输入切换、失败后缓存失效、
+- **领域单元测试**：`FakeTransport` 维护 VCP 状态表与原始 I2C 写入记录，覆盖档案匹配、输入切换、
+  标准写入被忽略后的原始 I2C 回退、回退不可用 / 双传输失败后的端口不支持标记、失败后缓存失效、
   亮度缩放、音频 auto 隐藏、静音反转、通用回退、步进、诊断和空枚举。
 - **配置测试**：默认配置生成、非法 schema 降级、空快捷键、snake_case TOML ↔ camelCase IPC 往返。
 - **档案测试**：LG 匹配、覆盖合并、数组替换、优先级、未知 override 警告、校验失败。
@@ -278,15 +318,20 @@ CLI 直接构造 `DisplayService`，不经过 Tauri，因此可在无桌面会�
 
 ## 15. 取舍与限制
 
-1. **单工作线程**：简单、无数据竞争，但一条慢指令会阻塞后续请求。2 秒超时把感知延迟限制在可接受范围；
+1. **单工作线程**：简单、无数据竞争，但一条慢指令会阻塞后续请求。分级超时（普通 10 秒、枚举 20 秒、
+   诊断 30 秒）在保证可感知反馈的同时，不会把正常的慢速 DDC 设备误判为失败；
    若未来需要并行，应按显示器分片而不是共享句柄。
-2. **切换后不读回**：避免主机失去信号时误判失败；代价是 UI 显示的是“预期输入”而非硬件回读值。
+2. **切换后回读，但回读失败视为成功**：显示器接受写入时用回读确认；切换到另一台主机后
+   DDC 通常会断开，此时把通信失败视为成功，避免误报。最终仍停留在原输入时明确标记端口不支持。
 3. **auto 能力探测**：能自动隐藏不存在的音频控件，但首次打开面板需要读多个 VCP，可能比纯静态配置慢；
    缓存与串行执行把额外开销限制在首屏。
 4. **稳定 ID 依赖 EDID**：无序列号的设备在换端口后可能改变 ID；这是数据源限制，不通过持久化映射掩盖。
 5. **启发式错误分类**：不同后端错误文本不一，分类可能落到 `internal`；诊断报告保留原始消息。
 6. **macOS 未实机验收**：构建配置、窗口策略与 vibrancy 已实现，但真实菜单栏行为、权限与 DDC 兼容性
    仍需在 macOS 硬件上确认。
+7. **原始 I2C 覆盖有限**：目前只有 Windows + NVIDIA（NVAPI）实现。AMD / Intel 没有公开的
+   等价接口，Apple Silicon 需要 IOAVService，Linux 需要 i2c-dev；这些平台统一返回不可用原因，
+   UI 把相关端口标记为不支持，而不是静默失败。
 
 ## 16. 可扩展点
 

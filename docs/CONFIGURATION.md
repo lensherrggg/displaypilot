@@ -229,6 +229,37 @@ value = 0x0F
 
 直接向 `vcp_code` 写入 `value`。这是 DDC/CI 标准输入源切换方式。
 
+标准写入成功但回读显示显示器忽略了该值时，可以配置原始 I2C 回退：
+
+```toml
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
+```
+
+回退由 GPU 直接向显示器 I2C 总线写入 DDC/CI 数据包，因此可以指定源地址（默认 `0x50`）。
+目前只有 Windows + NVIDIA 显卡（NVAPI）提供该能力；其他平台会明确标记端口不可用，不会静默失败。
+`raw_fallback` 同样适用于 `vendor` 选择器。
+
+#### 原始 I2C 直写
+
+```toml
+[[profiles.inputs]]
+id = "typec"
+label = "TypeC"
+[profiles.inputs.selector]
+type = "raw"
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
+verify_value = 0x10
+```
+
+`type = "raw"` 跳过标准 DDC/CI，直接通过 GPU I2C 写入。`verify_value` 是切换后回读
+`current_input_vcp_code` 时期望的值（省略时使用 `value`）。如果原始 I2C 不可用，该端口会在
+列表、诊断和 UI 中显示为“不支持”并附带原因。
+
 #### 厂商 VCP
 
 ```toml
@@ -266,14 +297,19 @@ write_mode = "table"
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `type` | `"standard"` / `"vendor"` | 选择器种类；`vendor` 允许 `data_address` / `write_mode`。 |
+| `type` | `"standard"` / `"vendor"` / `"raw"` | 选择器种类；`vendor` 允许 `data_address` / `write_mode`，`raw` 要求可用的原始 I2C 后端。 |
 | `vcp_code` | 0–255 | VCP 码。 |
 | `value` | 0–65535 | 目标原始值。 |
 | `data_address` | 0–65535 | 仅 `vendor`；表写入偏移。 |
 | `write_mode` | `"table"` / `"vcp"` | 仅 `vendor`；默认 `table`。 |
+| `source_address` | 0–255 | 仅 `raw`；DDC/CI 源地址，默认 `0x50`。 |
+| `verify_value` | 0–65535 | 仅 `raw`；回读当前输入时期望的值，默认等于 `value`。 |
 
-同一档案内重复的输入 `id` 会导致校验失败。读取当前输入时，服务按 `value` 反查第一个匹配的输入源；
-如果两个输入使用相同 value，只有第一个会被识别。
+同一档案内重复的输入 `id` 会导致校验失败。读取当前输入时，服务按 `verify_value`（`raw` 未设置时
+为 `value`）反查第一个匹配的输入源；如果两个输入使用相同值，只有第一个会被识别。
+
+`raw_fallback` 子表可出现在 `standard` / `vendor` 选择器中，字段与 `raw` 的
+`vcp_code` / `value` / `source_address` 相同。
 
 ## 6. 覆盖内置档案
 
@@ -336,25 +372,30 @@ value = 0xD1
 
 | id | 优先级 | 匹配 | 亮度 | 音量 / 静音 | 输入值 |
 | --- | --- | --- | --- | --- | --- |
-| `lg-27ul850` | 100 | 型号名含 `27UL850` 或 `UL850`（Windows 会用能力字符串回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10` |
+| `lg-27ul850` | 100 | 型号名含 `27UL850` 或 `UL850`（Windows 会用能力字符串回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10`；均带 `0xF4` 原始 I2C 回退 |
 | `generic-ddc` | -100 | 空（通用回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x1B`（标准值） |
 
 27UL850 的能力字符串会报告 `VCP 0x60(11 12 0F 10)`，因此内置档案使用这组标准值；USB-C 由
 第二个 DisplayPort 输入 `0x10` 表示。部分 LG 固件改用私有值 `0x90/0x91/0xD0/0xD1`（USB-C 可能
 是 `0xD2`），此时用上面的 `inputs` 覆盖即可。程序本身没有任何 `if LG` 之类的分支。
 
-> **Windows + LG USB-C 的限制**：实测 27UL850 的 USB-C 切换只接受厂商专用寻址
-> （VCP `0xF4`，DDC 源地址 `0x50`），Windows 的 `SetVCPFeature` 固定使用 `0x51`，无法发送这类
-> 命令；标准值 `0x10` 与私有值 `0xD1/0xD2` 都会被忽略。因此 Windows 上请把目标主机接到
-> HDMI / DP，或使用显示器 OSD 切换 USB-C。HDMI / DP 的程序内切换正常。应用会在回读发现
-> 切换被忽略时返回“显示器没有接受切换”的可操作错误，而不是假装成功。
+> **LG 厂商专用寻址与原始 I2C**：实测 27UL850 的 USB-C 切换只接受厂商专用寻址
+> （VCP `0xF4`，DDC 源地址 `0x50`），Windows 标准 `SetVCPFeature` 固定使用 `0x51`，无法发送这类
+> 命令。内置档案为四个输入都配置了 `raw_fallback`：标准写入被忽略时自动改用 NVAPI 原始 I2C
+> 重发 `0xF4`（HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD2`）。
+>
+> 该回退依赖 NVIDIA 显卡驱动。AMD / Intel 核显或独显、macOS、Linux 目前没有可用的原始 I2C
+> 后端，应用会把对应端口标记为“不支持”并显示原因，而不是假装成功。实测 NVAPI 可正常读取
+> `0xF4 @0x50`；切换到另一台主机后本机 DDC 会消失，因此应用把切换后的回读失败视为成功。
 
 ## 8. 验证与排错
 
 1. 运行 `displaypilot list`，确认显示器被发现、档案 id 与输入源符合预期。
 2. 运行 `displaypilot diagnose`，查看：
    - `profile_matched` 是否为 `true`（否则说明落到了通用档案）；
-   - 当前输入 VCP 原始值；
+   - 当前输入 VCP 原始值及其传输方式（`standard` / `raw:<后端>`）；
+   - 每个输入源是否支持切换、使用哪种传输方式、失败原因与建议；
+   - 原始 I2C 后端是否可用及其原因；
    - 能力字符串是否包含所需的 `VCP` 码；
    - 音量 / 静音读取失败的具体错误。
 3. 修改配置后，在设置页点击「重新加载配置」，或重启应用。
@@ -367,7 +408,7 @@ value = 0xD1
 | --- | --- | --- |
 | `profile_matched = false` | 厂商码 / 型号名不匹配 | 用诊断中的 `vendor_id`、`model_name` 修正 `match`，或新建 `custom_profiles`。 |
 | 输入切换失败但诊断有 `0x60` | 值不对或需要厂商写入 | 修正 `value`；尝试 `type = "vendor"` 与 `write_mode`。 |
-| 切换被忽略（`switch_ignored`） | 显示器没有接受写入的值，或接口无信号 | 确认信号源；Windows 上 LG 的 USB-C 需要厂商专用寻址，标准 DDC 无法发送，请改用 HDMI / DP 或 OSD 切换。 |
+| 端口不支持（`input_unsupported`） | 标准 DDC 与原始 I2C 都未生效，或当前 GPU / 平台没有原始 I2C 后端 | 确认目标接口已连接信号源；Windows 上 LG 的 USB-C 需要 NVIDIA 原始 I2C 回退，AMD / Intel 平台请改用 HDMI / DP 或 OSD 切换。原因会显示在该输入按钮与诊断报告中。 |
 | 音量控件不可用 | `auto` 读取失败 | 确认显示器支持 `0x62`；必要时显式 `supported = true` 强制显示。 |
 | 配置覆盖后输入变少 | 覆盖数组时未写全 | `inputs` 是整体替换，补全所有输入。 |
 | 设置页保存失败 | 文件不是有效 TOML/不可写 | 修正语法与文件权限；查看日志。 |
