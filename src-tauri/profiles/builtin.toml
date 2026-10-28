@@ -75,6 +75,7 @@ value = 0xD0
 source_address = 0x50
 
 # USB-C is exposed as the second DisplayPort input (0x10) on this firmware.
+# The vendor input list follows the same order: DP1=0xD0, DP2/USB-C=0xD1.
 [[profiles.inputs]]
 id = "typec"
 label = "TypeC"
@@ -84,7 +85,7 @@ vcp_code = 0x60
 value = 0x10
 [profiles.inputs.selector.raw_fallback]
 vcp_code = 0xF4
-value = 0xD2
+value = 0xD1
 source_address = 0x50
 
 [[profiles]]

@@ -249,7 +249,7 @@ npm run tauri dev
 - [ ] 切换到另一台主机后，在原主机再次操作会得到连接中断/失败提示（符合 DDC 限制）。
 - [ ] 输入码与实际接口一一对应：Windows 与 macOS 的 LG 27UL850 档案都使用 `0x11/0x12/0x0F/0x10`；旧固件若只认 `0x90/0x91/0xD0/0xD1`，按配置文档覆盖。
 - [ ] 被显示器忽略的标准写入会在面板稳定后单次回读，再触发原始 I2C 回退；成功后 `currentInput.transport` 为 `raw:<后端>`。
-- [ ] Windows + NVIDIA + 27UL850 切 USB-C：标准 `0x10` 被忽略后，NVAPI 发送 `0xF4=0xD2 @0x50`，显示器切换到另一台主机。
+- [ ] Windows + NVIDIA + 27UL850 切 USB-C：标准 `0x10` 被忽略后，NVAPI 发送 `0xF4=0xD1 @0x50`，显示器切换到另一台主机。
 - [ ] Windows + AMD / Intel 或 macOS / Linux：需要厂商专用寻址的端口标记为“不支持”（`input_unsupported`），按钮禁用并显示原因，不假装成功。
 - [ ] 原始 I2C 与标准 DDC 都失败时，端口进入运行时“不支持”状态；重新插拔或成功切换后标记清除。
 - [ ] `displaypilot switch dp --display 1` 与面板行为一致；`list` / `diagnose` 显示原始 I2C 后端与每个端口的传输方式。
@@ -261,7 +261,7 @@ npm run tauri dev
       （`0xF4` 值为 7，`0x60` 值为 `0x0F`），说明 Windows 可以响应厂商专用源地址。
 - [x] 已验证原始 I2C 写入：通过 NVAPI 将当前亮度值原样写回（画面无变化），200ms 后回读一致，
       确认 `NVAPI_I2CWrite` 与 DDC/CI 写封包可用。
-- [ ] 待现场验收：`0xF4 = 0xD2` 会把显示器切到另一台主机，需确认另一台主机已接 USB-C 且能从
+- [ ] 待现场验收：`0xF4 = 0xD1` 会把显示器切到另一台主机，需确认另一台主机已接 USB-C 且能从
       OSD 恢复后再执行；切换后原主机 DDC 消失属于预期。
 - [ ] AMD / Intel / macOS / Linux 没有可用的原始 I2C 实现，应看到明确不可用原因，而不是静默失败。
 

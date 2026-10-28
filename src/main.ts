@@ -302,6 +302,7 @@ function inputButton(input: InputOption): HTMLButtonElement {
 
 function renderInputs(snapshot: DisplaySnapshot): void {
   ui.inputGrid.replaceChildren();
+  ui.inputNote.title = "";
   const inputs = snapshot.display.inputs;
   if (inputs.length === 0) {
     const note = document.createElement("p");
@@ -326,7 +327,8 @@ function renderInputs(snapshot: DisplaySnapshot): void {
     ui.inputNote.textContent = `当前 ${snapshot.currentInput.label ?? ""}`;
     ui.inputNote.classList.remove("warning");
   } else if (snapshot.currentInput.readError) {
-    ui.inputNote.textContent = "状态未知";
+    ui.inputNote.textContent = "状态未知（显示器未回报）";
+    ui.inputNote.title = snapshot.currentInput.readError;
     ui.inputNote.classList.add("warning");
   } else {
     ui.inputNote.textContent = "";

@@ -200,7 +200,7 @@ match = { backend = "macos", vendor_id = "1E6D", model_id = 30470 }
 | — | `input_switch` | 布尔 | `true` | 是否允许切换输入源。为 `false` 时界面隐藏 / 禁用切换。 |
 | `brightness` | `supported` | 布尔或 `"auto"` | `true` | 亮度支持策略；默认强制显示。 |
 | | `vcp_code` | 整数 | `0x10` | 亮度 VCP。 |
-| | `min` / `max` | 整数 | `0` / `255` | 原始值范围，用于百分比换算。 |
+| | `min` / `max` | 整数 | `0` / `255` | 原始值范围。读取时优先采用显示器回报的最大值，`max` 仅作为回退。 |
 | | `step` | 整数 | `5` | 档案能力元数据，必须 > 0；实际交互步进来自 `[general]`。 |
 | `volume` | `supported` | 布尔或 `"auto"` | `"auto"` | 音量支持策略；默认读取成功才启用。 |
 | | `vcp_code` | 整数 | `0x62` | 音量 VCP。 |
@@ -247,7 +247,7 @@ value = 0x0F
 ```toml
 [profiles.inputs.selector.raw_fallback]
 vcp_code = 0xF4
-value = 0xD2
+value = 0xD1
 source_address = 0x50
 ```
 
@@ -264,7 +264,7 @@ label = "TypeC"
 [profiles.inputs.selector]
 type = "raw"
 vcp_code = 0xF4
-value = 0xD2
+value = 0xD1
 source_address = 0x50
 verify_value = 0x10
 ```
@@ -390,19 +390,20 @@ value = 0x1B
 | `generic-ddc` | -100 | 空（通用回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x1B`（标准值） |
 
 输入值以显示器能力字符串 `60( ... )` 与实际回读为准。27UL850 声明并回报标准值
-`0x11/0x12/0x0F/0x10`，因此 Windows 与 macOS 两个内置档案使用同一组值；亮度范围不同
-（Windows 0–255，macOS 0–100）。部分旧固件只接受厂商别名 `0x90/0x91/0xD0/0xD1`，先用
+`0x11/0x12/0x0F/0x10`，因此 Windows 与 macOS 两个内置档案使用同一组值。亮度与音量的
+百分比换算以 VCP 回复中的最大值为准（27UL850 实测为 100），配置文件里的 `max` 只是回退值。
+部分旧固件只接受厂商别名 `0x90/0x91/0xD0/0xD1`，先用
 「复制诊断」查看 VCP `0x60` 的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。
 
 诊断中的能力字符串 `60( 11 12 0F 10)` 表示该固件只声明这四个输入值；其中 `0x10` 是 USB-C
 （DP Alt Mode）。若切换到 TypeC 后回读仍为 HDMI1，说明固件未接受写入，或目标口无信号时自动切回。
-先确认 USB-C 口有活动信号；仍无效时可尝试覆盖为 `0x1B`（MCCS 标准 USB-C）或 `0xD1`（部分 LG
-厂商值），以实际切换结果为准。
+先确认 USB-C 口有活动信号；仍无效时可尝试覆盖为 `0x1B`（MCCS 标准 USB-C），以实际切换结果为准。
 
 > **LG 厂商专用寻址与原始 I2C**：实测 27UL850 的 USB-C 切换只接受厂商专用寻址
 > （VCP `0xF4`，DDC 源地址 `0x50`），Windows 标准 `SetVCPFeature` 固定使用 `0x51`，无法发送这类
 > 命令。内置 Windows 档案为四个输入都配置了 `raw_fallback`：标准写入被忽略时自动改用 NVAPI 原始 I2C
-> 重发 `0xF4`（HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD2`）。
+> 重发 `0xF4`（HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD1`）。厂商输入码按接口顺序递增：
+> USB-C 在这款固件中作为第二路 DisplayPort 暴露（标准值 `0x10`），对应厂商值 `0xD1`。
 >
 > 该回退依赖 NVIDIA 显卡驱动。AMD / Intel 核显或独显、macOS、Linux 目前没有可用的原始 I2C
 > 后端，应用会把对应端口标记为“不支持”并显示原因，而不是假装成功。实测 NVAPI 可正常读取
@@ -429,6 +430,7 @@ value = 0x1B
 | `profile_matched = false` | 厂商码 / 型号名不匹配 | 用诊断中的 `vendor_id`、`model_id`、`model_name` 修正 `match`，或新建 `custom_profiles`。macOS 需使用数值厂商 / 型号。 |
 | 输入切换失败但诊断有 `0x60` | 值不对或需要厂商写入 | 修正 `value`；尝试 `type = "vendor"` 与 `write_mode`。 |
 | 切换返回 `switch_unconfirmed` | 显示器忽略写入，或在目标口无信号时自动切回 | 确认目标接口有活动信号；LG 27UL850 的 USB-C 在部分固件上无法通过标准 DDC 切换，需要原始 I2C 回退，可改用显示器 OSD。 |
+| USB-C 下当前输入显示未知 | 该固件对标准 VCP `0x60` 返回 `0x0000`；亮度、音量不受影响 | 这是固件回报限制；NVIDIA 原始 I2C 可读取厂商输入值，AMD / Intel 暂无可用后端。 |
 | 切换后显示器提示“超出工作频率范围” | 目标主机的分辨率 / 刷新率超出显示器支持 | 在目标主机改为 3840×2160@60 或更低，检查线缆、HDR 与色深；这不是 DDC 写入失败。 |
 | 端口不支持（`input_unsupported`） | 标准 DDC 与原始 I2C 都未生效，或当前 GPU / 平台没有原始 I2C 后端 | 确认目标接口已连接信号源；Windows 上 LG 的 USB-C 需要 NVIDIA 原始 I2C 回退，AMD / Intel 平台请改用 HDMI / DP 或 OSD 切换。原因会显示在该输入按钮与诊断报告中。 |
 | 音量控件不可用 | `auto` 读取失败 | 确认显示器支持 `0x62`；必要时显式 `supported = true` 强制显示。 |

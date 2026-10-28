@@ -553,7 +553,11 @@ impl<T: DdcTransport> DisplayService<T> {
         }
 
         let percent = clamp_percent(percent);
-        let raw = percent_to_raw(percent, capability.min, capability.max);
+        let max = self.displays[index]
+            .snapshot
+            .as_ref()
+            .map_or(capability.max, |snapshot| snapshot.brightness.max);
+        let raw = percent_to_raw(percent, capability.min, max);
         let result = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
@@ -576,8 +580,7 @@ impl<T: DdcTransport> DisplayService<T> {
             .snapshot
             .as_mut()
             .expect("snapshot was ensured");
-        snapshot.brightness =
-            feature_state_from_value(&capability, percent, raw, None, true, true, None);
+        snapshot.brightness = feature_state_from_value(&capability, max, percent, raw, None, None);
         snapshot.probed_at = now_rfc3339();
         Ok(snapshot.clone())
     }
@@ -608,7 +611,11 @@ impl<T: DdcTransport> DisplayService<T> {
         }
 
         let percent = clamp_percent(percent);
-        let raw = percent_to_raw(percent, capability.min, capability.max);
+        let max = self.displays[index]
+            .snapshot
+            .as_ref()
+            .map_or(capability.max, |snapshot| snapshot.volume.max);
+        let raw = percent_to_raw(percent, capability.min, max);
         let result = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
@@ -630,8 +637,7 @@ impl<T: DdcTransport> DisplayService<T> {
             .snapshot
             .as_mut()
             .expect("snapshot was ensured");
-        snapshot.volume =
-            feature_state_from_value(&capability, percent, raw, None, true, true, None);
+        snapshot.volume = feature_state_from_value(&capability, max, percent, raw, None, None);
         snapshot.probed_at = now_rfc3339();
         Ok(snapshot.clone())
     }
@@ -1128,10 +1134,12 @@ impl<T: DdcTransport> DisplayService<T> {
                             label: None,
                             raw_value: Some(reading.value),
                             transport: Some("standard".into()),
-                            read_error: Some(format!(
-                                "当前输入源值 0x{:04X} 未在配置中定义。",
-                                reading.value
-                            )),
+                            read_error: Some(if reading.value == 0 {
+                                "显示器返回 0x0000，未报告当前输入源；LG 固件在 USB-C 输入下会出现这种情况。"
+                                    .into()
+                            } else {
+                                format!("当前输入源值 0x{:04X} 未在配置中定义。", reading.value)
+                            }),
                         },
                     }
                 }
@@ -1178,15 +1186,17 @@ impl<T: DdcTransport> DisplayService<T> {
         };
 
         match result {
-            Ok(reading) => feature_state_from_value(
-                &capability,
-                raw_to_percent(reading.value, capability.min, capability.max),
-                reading.value,
-                None,
-                true,
-                true,
-                None,
-            ),
+            Ok(reading) => {
+                let max = effective_max(&capability, &reading);
+                feature_state_from_value(
+                    &capability,
+                    max,
+                    raw_to_percent(reading.value, capability.min, max),
+                    reading.value,
+                    None,
+                    None,
+                )
+            }
             Err(error) => FeatureValueState {
                 supported: true,
                 editable: true,
@@ -1217,15 +1227,17 @@ impl<T: DdcTransport> DisplayService<T> {
         };
 
         match result {
-            Ok(reading) => feature_state_from_value(
-                &capability,
-                raw_to_percent(reading.value, capability.min, capability.max),
-                reading.value,
-                None,
-                true,
-                true,
-                None,
-            ),
+            Ok(reading) => {
+                let max = effective_max(&capability, &reading);
+                feature_state_from_value(
+                    &capability,
+                    max,
+                    raw_to_percent(reading.value, capability.min, max),
+                    reading.value,
+                    None,
+                    None,
+                )
+            }
             Err(error) => {
                 if capability.supported.is_forced() {
                     FeatureValueState {
@@ -1341,23 +1353,32 @@ enum Feature {
 
 fn feature_state_from_value(
     capability: &RangeCapability,
+    max: u16,
     percent: u8,
     raw: u16,
     read_error: Option<String>,
-    supported: bool,
-    editable: bool,
     hint: Option<String>,
 ) -> FeatureValueState {
     FeatureValueState {
-        supported,
-        editable,
+        supported: true,
+        editable: true,
         percent: Some(percent),
         raw_value: Some(raw),
         min: capability.min,
-        max: capability.max,
+        max,
         step: capability.step,
         read_error,
         hint,
+    }
+}
+
+/// The VCP reply's maximum is authoritative: a profile default of 0–255 must not
+/// turn a monitor's 0–100 brightness into 39%.
+fn effective_max(capability: &RangeCapability, reading: &VcpReading) -> u16 {
+    if reading.maximum > capability.min && reading.maximum >= reading.value {
+        reading.maximum
+    } else {
+        capability.max
     }
 }
 
@@ -1812,8 +1833,8 @@ mod tests {
                 match value {
                     0x90 => 0x11,
                     0x91 => 0x12,
-                    0xD0 | 0xD1 => 0x0F,
-                    0xD2 => 0x10,
+                    0xD0 => 0x0F,
+                    0xD1 => 0x10,
                     other => other,
                 }
             } else {
@@ -1895,7 +1916,7 @@ mod tests {
 
         let state = state.borrow();
         assert_eq!(state.writes, vec![(0x60, 0x10)]);
-        assert_eq!(state.raw_writes, vec![(0x50, 0xF4, 0xD2)]);
+        assert_eq!(state.raw_writes, vec![(0x50, 0xF4, 0xD1)]);
         assert_eq!(state.values[&0x60].value, 0x10);
     }
 
@@ -2061,6 +2082,29 @@ mod tests {
             .find(|input| input.id == "hdmi1")
             .unwrap();
         assert!(hdmi1.supported);
+    }
+
+    #[test]
+    fn brightness_and_volume_use_display_reported_maximum() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.values.insert(0x10, reading(100, 100));
+            state.values.insert(0x62, reading(100, 100));
+        }
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let snapshot = service.snapshot(&id, false).unwrap();
+        assert_eq!(snapshot.brightness.percent, Some(100));
+        assert_eq!(snapshot.brightness.max, 100);
+        assert_eq!(snapshot.volume.percent, Some(100));
+        assert_eq!(snapshot.volume.max, 100);
+
+        let snapshot = service.set_brightness(&id, 50).unwrap();
+        assert_eq!(state.borrow().writes.last(), Some(&(0x10, 50)));
+        assert_eq!(snapshot.brightness.percent, Some(50));
     }
 
     #[test]

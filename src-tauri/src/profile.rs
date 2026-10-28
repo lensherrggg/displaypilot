@@ -660,7 +660,7 @@ mod tests {
         let typec = profile.input("typec").unwrap();
         let raw = typec.selector.raw_fallback().expect("typec raw fallback");
         assert_eq!(raw.vcp_code, 0xF4);
-        assert_eq!(raw.value, 0xD2);
+        assert_eq!(raw.value, 0xD1);
         assert_eq!(raw.source_address, 0x50);
         assert_eq!(
             profile

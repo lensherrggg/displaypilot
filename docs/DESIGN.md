@@ -133,7 +133,8 @@ raw = min + round((max - min) * percent / 100)
 percent = round((raw - min) * 100 / (max - min))
 ```
 
-UI 只使用 0–100 的整数；不同显示器的 `max`（常见 100 或 255）由配置决定。步进来自 `[general]`，
+UI 只使用 0–100 的整数；百分比换算优先采用 VCP 回复中的 `maximum`（常见 100 或 255），
+配置里的 `max` 仅作回退。步进来自 `[general]`，
 快捷键与箭头键使用同一步进，相对调整在边界处饱和。
 
 ## 7. 输入源选择器
@@ -169,14 +170,14 @@ vcp_code = 0x60
 value = 0x10
 [profiles.inputs.selector.raw_fallback]
 vcp_code = 0xF4
-value = 0xD2
+value = 0xD1
 source_address = 0x50
 
 # 原始 I2C 直写
 [profiles.inputs.selector]
 type = "raw"
 vcp_code = 0xF4
-value = 0xD2
+value = 0xD1
 source_address = 0x50
 verify_value = 0x10
 ```
