@@ -22,6 +22,16 @@ npm run check          # 版本 + 前端构建 + Rust 测试 + fmt/clippy
 | `npm run check:rust` | `cargo fmt --check` + `cargo clippy --all-targets -D warnings`。 |
 | `npm run tauri build` | 生成 Windows/macOS 可执行文件与安装包。 |
 
+### 0.2.5 自动化结果（macOS 27.0.1 arm64）
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm run check:version` | 通过：0.2.5 三处清单、Cargo.lock 与 CHANGELOG 一致。 |
+| `npm run build` | 通过：两个页面与资源产出到 `dist/`。 |
+| `npm run test:rust` | 通过：34 passed / 0 failed（内置档案测试改用标准输入值）。 |
+| `npm run check:rust` | 通过：格式无差异，Clippy 无警告。 |
+| `npm run tauri build -- --debug` | 通过：生成 `DisplayPilot.app` 与 `.dmg`。 |
+
 ### 0.2.4 自动化结果（macOS 27.0.1 arm64）
 
 | 检查 | 结果 |
@@ -215,7 +225,7 @@ npm run tauri dev
 - [ ] 重复点击当前输入不会发送多余写入。
 - [ ] 目标接口无信号时返回可操作错误，面板恢复可用，不长期卡在“切换中…”。
 - [ ] 切换到另一台主机后，在原主机再次操作会得到连接中断/失败提示（符合 DDC 限制）。
-- [ ] 厂商私有编码与实际接口一一对应：Windows 的 LG 27UL850 使用 `0x90/0x91/0xD0/0xD1`，macOS 档案使用 `0x11/0x12/0x0F/0x10`；不一致时按配置文档覆盖。
+- [ ] 厂商私有编码与实际接口一一对应：Windows 与 macOS 的 LG 27UL850 档案都使用 `0x11/0x12/0x0F/0x10`；旧固件若只认 `0x90/0x91/0xD0/0xD1`，按配置文档覆盖。
 - [ ] `displaypilot switch dp --display 1` 与面板行为一致。
 
 ### 4.3 亮度
@@ -286,7 +296,7 @@ npm run tauri dev
 | `displaypilot diagnose --json` | 完整诊断 JSON。 |
 | `displaypilot config` | 路径、配置、档案、快捷键。 |
 | `displaypilot --help` | 帮助，退出码 0。 |
-| `displaypilot --version` | `displaypilot 0.2.4`。 |
+| `displaypilot --version` | `displaypilot 0.2.5`。 |
 | `displaypilot bogus` | 参数错误，退出码 64。 |
 | `displaypilot --help --json` | 帮助优先，退出码 0。 |
 
