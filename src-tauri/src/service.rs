@@ -1269,7 +1269,7 @@ mod tests {
         fn lg() -> Self {
             let mut values = BTreeMap::new();
             values.insert(0x10, reading(128, 255));
-            values.insert(0x60, reading(0xD0, 0xD1));
+            values.insert(0x60, reading(0x0F, 0x10));
             values.insert(0x62, reading(64, 255));
             values.insert(0x8D, reading(1, 2));
             values.insert(0xDF, reading(0x0202, 0));
@@ -1467,7 +1467,7 @@ mod tests {
 
         let snapshot = service.snapshot(&id, false).unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0xD0));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x0F));
         assert_eq!(snapshot.brightness.percent, Some(50));
         assert_eq!(snapshot.brightness.raw_value, Some(128));
         assert!(snapshot.volume.editable);
@@ -1485,11 +1485,11 @@ mod tests {
 
         let snapshot = service.switch_input(&id, "hdmi1").unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0x90));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x11));
 
         let state = state.borrow();
-        assert_eq!(state.writes, vec![(0x60, 0x90)]);
-        assert_eq!(state.values[&0x60].value, 0x90);
+        assert_eq!(state.writes, vec![(0x60, 0x11)]);
+        assert_eq!(state.values[&0x60].value, 0x11);
     }
 
     #[test]
@@ -1518,11 +1518,11 @@ mod tests {
         assert_eq!(error.code, "switch_unconfirmed");
         assert!(error.message.contains("HDMI1"));
         assert!(error.hint.is_some());
-        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+        assert_eq!(state.borrow().writes, vec![(0x60, 0x11)]);
 
         let snapshot = service.snapshot(&id, false).unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
-        assert_eq!(snapshot.current_input.raw_value, Some(0xD0));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x0F));
     }
 
     #[test]
@@ -1561,8 +1561,8 @@ mod tests {
 
             let snapshot = service.switch_input(&id, "hdmi1").unwrap();
             assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
-            assert_eq!(snapshot.current_input.raw_value, Some(0x90));
-            assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+            assert_eq!(snapshot.current_input.raw_value, Some(0x11));
+            assert_eq!(state.borrow().writes, vec![(0x60, 0x11)]);
             assert_eq!(
                 state.borrow().reads,
                 vec![0x60],

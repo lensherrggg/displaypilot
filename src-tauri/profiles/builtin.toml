@@ -34,16 +34,17 @@ vcp_code = 0x8D
 on_value = 1
 off_value = 2
 
-# LG's input select values are vendor-specific in practice. These defaults are
-# field-reported for LG 27UL850; use "诊断信息" to verify, then override them in
-# the user config if your firmware differs.
+# The 27UL850 advertises the MCCS standard input values in its capability
+# string (60( 11 12 0F 10)) and reports them on readback. Some older LG firmware
+# only accepts the vendor aliases 0x90/0x91/0xD0/0xD1; override them in the user
+# config if "诊断信息" shows a different mapping.
 [[profiles.inputs]]
 id = "hdmi1"
 label = "HDMI1"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x90
+value = 0x11
 
 [[profiles.inputs]]
 id = "hdmi2"
@@ -51,7 +52,7 @@ label = "HDMI2"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x91
+value = 0x12
 
 [[profiles.inputs]]
 id = "dp"
@@ -59,7 +60,7 @@ label = "DP"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD0
+value = 0x0F
 
 [[profiles.inputs]]
 id = "typec"
@@ -67,7 +68,7 @@ label = "TypeC"
 [profiles.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD1
+value = 0x10
 
 [[profiles]]
 # macOS has no EDID blob for external displays on Apple Silicon, so the Windows

@@ -297,7 +297,7 @@ write_mode = "table"
 - 标量覆盖；
 - 未知 id 会被忽略并给出警告，不会让整份配置失效。
 
-例如，把 LG 27UL850 的 Type-C 值改为 `0x00D2`，并只改亮度的上限：
+例如，把 LG 27UL850 的 Type-C 值改为 `0x1B`（MCCS 标准值），并只改亮度的上限：
 
 ```toml
 [profile_overrides.lg-27ul850]
@@ -312,7 +312,7 @@ label = "HDMI1"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x90
+value = 0x11
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "hdmi2"
@@ -320,7 +320,7 @@ label = "HDMI2"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x91
+value = 0x12
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "dp"
@@ -328,7 +328,7 @@ label = "DP"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD0
+value = 0x0F
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "typec"
@@ -336,7 +336,7 @@ label = "TypeC"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD2
+value = 0x1B
 ```
 
 因为 `inputs` 是数组，必须提供完整四项；只写 Type-C 会让其余输入消失。
@@ -345,14 +345,14 @@ value = 0xD2
 
 | id | 优先级 | 匹配 | 亮度 | 音量 / 静音 | 输入值 |
 | --- | --- | --- | --- | --- | --- |
-| `lg-27ul850` | 100 | `vendor_id = "GSM"` 且型号名含 `27UL850` | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD1` |
+| `lg-27ul850` | 100 | `vendor_id = "GSM"` 且型号名含 `27UL850` | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10` |
 | `lg-27ul850-macos` | 110 | `backend = "macos"` 且 `model_id = 30470` | `0x10`，0–100，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10` |
 | `generic-ddc` | -100 | 空（通用回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x1B`（标准值） |
 
-LG 的输入值来自现场反馈，属于厂商私有编码；不同固件可能不同。先用「复制诊断」查看 VCP `0x60`
-的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。macOS 上 LG HDR 4K 的报告值为
-`0x11/0x12/0x0F/0x10`，亮度与音量最大值为 `0x64`（100），与 Windows 档案的 `0x90/0x91/0xD0/0xD1`
-和 0–255 不同。
+输入值以显示器能力字符串 `60( ... )` 与实际回读为准。27UL850 声明并回报标准值
+`0x11/0x12/0x0F/0x10`，因此 Windows 与 macOS 两个内置档案使用同一组值；亮度范围不同
+（Windows 0–255，macOS 0–100）。部分旧固件只接受厂商别名 `0x90/0x91/0xD0/0xD1`，先用
+「复制诊断」查看 VCP `0x60` 的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。
 
 诊断中的能力字符串 `60( 11 12 0F 10)` 表示该固件只声明这四个输入值；其中 `0x10` 是 USB-C
 （DP Alt Mode）。若切换到 TypeC 后回读仍为 HDMI1，说明固件未接受写入，或目标口无信号时自动切回。
@@ -397,7 +397,7 @@ label = "HDMI1"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x90
+value = 0x11
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "hdmi2"
@@ -405,7 +405,7 @@ label = "HDMI2"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0x91
+value = 0x12
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "dp"
@@ -413,7 +413,7 @@ label = "DP"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD0
+value = 0x0F
 
 [[profile_overrides.lg-27ul850.inputs]]
 id = "typec"
@@ -421,7 +421,7 @@ label = "TypeC"
 [profile_overrides.lg-27ul850.inputs.selector]
 type = "standard"
 vcp_code = 0x60
-value = 0xD2
+value = 0x1B
 ```
 
 其余字段（步进、快捷键）会自动使用默认值；这是有意设计的：用户只需要维护与默认不同的部分。

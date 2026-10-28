@@ -563,7 +563,7 @@ mod tests {
         assert!(matched);
         assert_eq!(profile.id, "lg-27ul850");
         assert_eq!(profile.inputs.len(), 4);
-        assert_eq!(profile.input("dp").unwrap().selector.value(), 0xD0);
+        assert_eq!(profile.input("dp").unwrap().selector.value(), 0x0F);
     }
 
     #[test]
