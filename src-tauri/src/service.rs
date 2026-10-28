@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,10 +10,10 @@ use crate::models::{
     ProfileSummary, VcpRead,
 };
 use crate::profile::{
-    Capabilities, DisplayIdentity, DisplayProfile, InputSelector, ProfileCatalog, RangeCapability,
-    VendorWriteMode,
+    Capabilities, DisplayIdentity, DisplayProfile, InputSelector, InputSource, ProfileCatalog,
+    RangeCapability, RawSelector, VendorWriteMode,
 };
-use crate::transport::{DdcTransport, TransportError, VcpReading};
+use crate::transport::{DdcTransport, RawSupport, TransportError, VcpReading};
 use crate::util::{
     clamp_percent, now_rfc3339, percent_to_raw, platform_info, raw_to_percent, stable_display_id,
 };
@@ -23,6 +24,7 @@ use crate::util::{
 /// handler on LG-class firmware, so this delay is intentional and must not be
 /// replaced by a short retry loop.
 const INPUT_SETTLE: Duration = Duration::from_millis(1_500);
+const RAW_SETTLE: Duration = Duration::from_millis(220);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickAction {
@@ -58,10 +60,73 @@ struct ManagedDisplay<H> {
     profile_matched: bool,
     handle: H,
     capabilities_error: Option<String>,
+    raw_support: RawSupport,
+    unsupported_inputs: HashMap<String, String>,
     snapshot: Option<DisplaySnapshot>,
 }
 
+#[derive(Debug, Clone)]
+struct InputAvailability {
+    supported: bool,
+    transport: String,
+    reason: Option<String>,
+    hint: Option<String>,
+}
+
 impl<H> ManagedDisplay<H> {
+    fn input_availability(&self, input: &InputSource) -> InputAvailability {
+        let raw_backend = self
+            .raw_support
+            .backend
+            .clone()
+            .unwrap_or_else(|| "raw".into());
+        let runtime_reason = self.unsupported_inputs.get(&input.id).cloned();
+        let raw_reason = self
+            .raw_support
+            .reason
+            .clone()
+            .unwrap_or_else(|| "原始 I2C 后端不可用。".into());
+
+        match &input.selector {
+            InputSelector::Standard { raw_fallback, .. }
+            | InputSelector::Vendor { raw_fallback, .. } => {
+                let has_fallback = raw_fallback.is_some();
+                let transport = if has_fallback && self.raw_support.available {
+                    format!("standard+raw:{raw_backend}")
+                } else {
+                    "standard".into()
+                };
+                let hint = if has_fallback && !self.raw_support.available {
+                    Some(format!(
+                        "标准 DDC/CI 被显示器忽略时需要原始 I2C，当前不可用：{raw_reason}"
+                    ))
+                } else {
+                    None
+                };
+                InputAvailability {
+                    supported: runtime_reason.is_none(),
+                    transport,
+                    reason: runtime_reason,
+                    hint,
+                }
+            }
+            InputSelector::Raw { source_address, .. } => {
+                let transport = format!("raw:{raw_backend}@0x{source_address:02X}");
+                let reason = if !self.raw_support.available {
+                    Some(raw_reason)
+                } else {
+                    runtime_reason
+                };
+                InputAvailability {
+                    supported: reason.is_none(),
+                    transport,
+                    reason,
+                    hint: None,
+                }
+            }
+        }
+    }
+
     fn summary(&self) -> DisplaySummary {
         DisplaySummary {
             id: self.id.clone(),
@@ -78,14 +143,24 @@ impl<H> ManagedDisplay<H> {
                 .profile
                 .inputs
                 .iter()
-                .map(|input| InputOption {
-                    id: input.id.clone(),
-                    label: input.label.clone(),
+                .map(|input| {
+                    let availability = self.input_availability(input);
+                    InputOption {
+                        id: input.id.clone(),
+                        label: input.label.clone(),
+                        supported: availability.supported,
+                        transport: availability.transport,
+                        reason: availability.reason,
+                        hint: availability.hint,
+                    }
                 })
                 .collect(),
             input_switch_supported: self.profile.capabilities.input_switch
                 && !self.profile.inputs.is_empty(),
             current_input_vcp_code: self.profile.current_input_vcp_code,
+            raw_i2c_available: self.raw_support.available,
+            raw_i2c_backend: self.raw_support.backend.clone(),
+            raw_i2c_reason: self.raw_support.reason.clone(),
         }
     }
 }
@@ -206,7 +281,7 @@ impl<T: DdcTransport> DisplayService<T> {
         let index = self.require_index(display_id)?;
         self.ensure_snapshot(index, false)?;
 
-        let (selector, already_current, input_label) = {
+        let (selector, already_current, input_label, verify_code, raw_support) = {
             let display = &self.displays[index];
             if !display.profile.capabilities.input_switch {
                 return Err(
@@ -225,7 +300,13 @@ impl<T: DdcTransport> DisplayService<T> {
                 .as_ref()
                 .and_then(|snapshot| snapshot.current_input.input_id.as_deref())
                 == Some(input_id);
-            (input.selector.clone(), already_current, input.label.clone())
+            (
+                input.selector.clone(),
+                already_current,
+                input.label.clone(),
+                display.profile.current_input_vcp_code,
+                display.raw_support.clone(),
+            )
         };
 
         if already_current {
@@ -237,109 +318,223 @@ impl<T: DdcTransport> DisplayService<T> {
         }
 
         log::info!("Switch input: display={display_id} input={input_id} ({input_label})");
-        let result = {
-            let transport = &self.transport;
-            let display = &mut self.displays[index];
-            match selector.clone() {
-                InputSelector::Standard { vcp_code, value } => {
-                    log::info!("write VCP 0x{vcp_code:02X} = 0x{value:04X}");
-                    transport.write_vcp(&mut display.handle, vcp_code, value)
-                }
-                InputSelector::Vendor {
-                    vcp_code,
-                    value,
-                    data_address,
-                    write_mode,
-                } => match write_mode {
-                    VendorWriteMode::Vcp => {
-                        log::info!("vendor VCP 0x{vcp_code:02X} = 0x{value:04X}");
-                        transport.write_vcp(&mut display.handle, vcp_code, value)
-                    }
-                    VendorWriteMode::Table => {
-                        log::info!(
-                            "vendor table 0x{vcp_code:02X} offset 0x{data_address:04X} = 0x{value:04X}"
-                        );
-                        transport.table_write(
-                            &mut display.handle,
-                            vcp_code,
-                            data_address,
-                            &value.to_be_bytes(),
-                        )
-                    }
-                },
-            }
-        };
 
-        if let Err(error) = result {
-            log::warn!("Input switch failed for {display_id}: {error}");
-            self.displays[index].snapshot = None;
-            self.last_used = Some(display_id.to_string());
-            return Err(AppError::switch_failed(&error));
+        if selector.is_raw() && !raw_support.available {
+            let reason = raw_support
+                .reason
+                .clone()
+                .unwrap_or_else(|| "原始 I2C 后端不可用。".into());
+            return Err(self.mark_input_unsupported(index, input_id, &input_label, reason));
         }
 
-        // A successful DDC write does not guarantee the panel changed: some
-        // displays ignore the value, and LG firmware may fall back when the
-        // target port has no signal. Confirm before claiming success so the UI
-        // never shows "TypeC" while the monitor stays on HDMI1.
-        //
-        // Do not poll while the panel is switching, though. LG-class firmware
-        // wedges its DDC handler when VCP 0x60 is read right after the input
-        // command: the bus then answers reads but ignores every later input
-        // write until the monitor is power-cycled. Wait for the panel to
-        // settle, then read back exactly once.
-        //
-        // A read that answers proves the panel is still on this input. A read
-        // that fails proves this host lost the panel, i.e. the switch was
-        // accepted. The CoreGraphics link state is only logged: LG keeps the
-        // link up even after switching away, so it cannot tell the two cases
-        // apart.
-        let input_vcp_code = self.displays[index].profile.current_input_vcp_code;
-        let target_value = selector.value();
-        std::thread::sleep(self.input_settle);
-        let observed = {
+        let mut used_transport = if selector.is_raw() {
+            format!(
+                "raw:{}",
+                raw_support.backend.as_deref().unwrap_or("unknown")
+            )
+        } else {
+            "standard".to_string()
+        };
+
+        let primary_result = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
-            match transport.read_vcp(&mut display.handle, input_vcp_code) {
-                Ok(reading) => Some(reading.value),
-                Err(error) => {
-                    log::debug!(
-                        "Input readback failed after the panel settled: {error}; link={:?}",
-                        transport.link_online(&display.handle)
-                    );
-                    None
-                }
-            }
+            write_selector(transport, &mut display.handle, &selector)
         };
-        if let Some(value) = observed {
-            if value != target_value {
-                log::warn!(
-                    "Input switch unconfirmed: wrote 0x{target_value:04X} but read 0x{value:04X}"
-                );
-                self.displays[index].snapshot = None;
-                self.last_used = Some(display_id.to_string());
-                return Err(AppError::new(
-                    "switch_unconfirmed",
-                    format!("显示器未确认切换到{input_label}（当前输入值 0x{value:04X}）。"),
-                )
-                .with_hint(
-                    "确认目标接口已接入信号源，且显示器 OSD 菜单已退出；LG 固件在信号超出面板范围时会自动切回。",
+
+        let mut primary_error = None;
+        let mut readback = None;
+        match primary_result {
+            Ok(()) => {
+                // DDC input writes are fire-and-forget on Windows: the call can
+                // report success even when the monitor ignores the value.
+                //
+                // Do not poll while the panel is switching: LG-class firmware
+                // wedges its DDC handler when VCP 0x60 is read right after the
+                // input command. Wait for the panel to settle, then read once.
+                std::thread::sleep(self.input_settle);
+                let transport = &self.transport;
+                let display = &mut self.displays[index];
+                readback = Some(read_input_value(
+                    transport,
+                    &mut display.handle,
+                    verify_code,
                 ));
             }
+            Err(error) => {
+                log::warn!("Input switch write failed for {display_id}: {error}");
+                primary_error = Some(error);
+            }
         }
 
-        self.last_used = Some(display_id.to_string());
+        if let Some(Ok(value)) = &readback {
+            if input_accepted(&self.displays[index].profile, input_id, *value) {
+                return Ok(self.finish_switch(
+                    index,
+                    input_id,
+                    &input_label,
+                    &selector,
+                    &used_transport,
+                ));
+            }
+            log::warn!(
+                "Input switch ignored for {display_id}: requested 0x{:04X}, still {}",
+                selector.value(),
+                describe_input(&self.displays[index].profile, *value)
+            );
+        } else if let Some(Err(error)) = &readback {
+            // The monitor may have switched away and stopped answering DDC.
+            log::info!(
+                "Post-switch input readback unavailable: {error}; link={:?}; assuming switch succeeded",
+                self.transport
+                    .link_online(&self.displays[index].handle)
+            );
+            return Ok(self.finish_switch(
+                index,
+                input_id,
+                &input_label,
+                &selector,
+                &used_transport,
+            ));
+        }
+
+        let fallback = selector.raw_fallback().cloned();
+        let Some(fallback) = fallback else {
+            if let Some(error) = primary_error {
+                self.displays[index].snapshot = None;
+                self.last_used = Some(display_id.to_string());
+                return Err(AppError::switch_failed(&error));
+            }
+            let Some(value) = readback.as_ref().and_then(|result| result.as_ref().ok()) else {
+                unreachable!("a failed readback returns early");
+            };
+            log::warn!(
+                "Input switch unconfirmed: wrote 0x{:04X} but read 0x{value:04X}",
+                selector.value()
+            );
+            self.displays[index].snapshot = None;
+            self.last_used = Some(display_id.to_string());
+            return Err(AppError::new(
+                "switch_unconfirmed",
+                format!("显示器未确认切换到{input_label}（当前输入值 0x{value:04X}）。"),
+            )
+            .with_hint(
+                "确认目标接口已接入信号源，且显示器 OSD 菜单已退出；LG 固件在信号超出面板范围时会自动切回。",
+            ));
+        };
+
+        if !raw_support.available {
+            let reason = format!(
+                "标准 DDC/CI 已被显示器忽略，该端口需要原始 I2C 回退（VCP 0x{:02X} @0x{:02X}），但原始 I2C 后端不可用：{}",
+                fallback.vcp_code,
+                fallback.source_address,
+                raw_support
+                    .reason
+                    .as_deref()
+                    .unwrap_or("未知原因")
+            );
+            return Err(self.mark_input_unsupported(index, input_id, &input_label, reason));
+        }
+
+        log::info!(
+            "Falling back to raw I2C for {display_id}: VCP 0x{:02X} = 0x{:04X} from source 0x{:02X}",
+            fallback.vcp_code,
+            fallback.value,
+            fallback.source_address
+        );
+        let fallback_result = {
+            let transport = &self.transport;
+            let display = &mut self.displays[index];
+            write_raw_selector(transport, &mut display.handle, &fallback)
+        };
+        if let Err(error) = fallback_result {
+            log::warn!("Raw I2C fallback failed for {display_id}: {error}");
+            self.displays[index].snapshot = None;
+            self.last_used = Some(display_id.to_string());
+            return Err(AppError::switch_failed(&error).with_hint(
+                "标准 DDC/CI 与原始 I2C 均写入失败。确认目标接口已连接信号源，并检查显卡驱动是否正常。",
+            ));
+        }
+
+        used_transport = format!(
+            "raw:{}",
+            raw_support.backend.as_deref().unwrap_or("unknown")
+        );
+        std::thread::sleep(RAW_SETTLE);
+        let fallback_readback = {
+            let transport = &self.transport;
+            let display = &mut self.displays[index];
+            read_input_value(transport, &mut display.handle, verify_code)
+        };
+        match fallback_readback {
+            Ok(value) if input_accepted(&self.displays[index].profile, input_id, value) => {
+                Ok(self.finish_switch(index, input_id, &input_label, &selector, &used_transport))
+            }
+            Ok(value) => {
+                let current = describe_input(&self.displays[index].profile, value);
+                let reason = format!(
+                    "已尝试标准 DDC/CI 与原始 I2C（VCP 0x{:02X} @0x{:02X}），显示器仍停留在 {current}。",
+                    fallback.vcp_code, fallback.source_address
+                );
+                log::warn!("Input switch ignored after raw fallback: {reason}");
+                Err(self.mark_input_unsupported(index, input_id, &input_label, reason))
+            }
+            Err(error) => {
+                // Switching to another host usually removes DDC from this host.
+                log::info!(
+                    "Post-raw-fallback readback unavailable: {error}; assuming switch succeeded"
+                );
+                Ok(self.finish_switch(index, input_id, &input_label, &selector, &used_transport))
+            }
+        }
+    }
+
+    fn finish_switch(
+        &mut self,
+        index: usize,
+        input_id: &str,
+        input_label: &str,
+        selector: &InputSelector,
+        transport: &str,
+    ) -> DisplaySnapshot {
+        self.displays[index].unsupported_inputs.remove(input_id);
+        self.last_used = Some(self.displays[index].id.clone());
         let snapshot = self.displays[index]
             .snapshot
             .as_mut()
             .expect("snapshot was ensured");
         snapshot.current_input = CurrentInputState {
             input_id: Some(input_id.to_string()),
-            label: Some(input_label),
-            raw_value: Some(selector.value()),
+            label: Some(input_label.to_string()),
+            raw_value: selector.verify_value(),
+            transport: Some(transport.to_string()),
             read_error: None,
         };
         snapshot.probed_at = now_rfc3339();
-        Ok(snapshot.clone())
+        snapshot.clone()
+    }
+
+    fn mark_input_unsupported(
+        &mut self,
+        index: usize,
+        input_id: &str,
+        input_label: &str,
+        reason: String,
+    ) -> AppError {
+        log::warn!("Input '{input_id}' marked unsupported: {reason}");
+        self.displays[index]
+            .unsupported_inputs
+            .insert(input_id.to_string(), reason.clone());
+        self.displays[index].snapshot = None;
+        self.last_used = Some(self.displays[index].id.clone());
+        AppError::new(
+            "input_unsupported",
+            format!("无法切换到 {input_label}：{reason}"),
+        )
+        .with_hint(
+            "该端口在当前 GPU 与平台上没有可用的切换通道。可改用其他接口，\
+             或在显示器 OSD 中手动切换；更换连接方式后刷新显示器列表再试。",
+        )
     }
 
     pub fn set_brightness(
@@ -595,6 +790,10 @@ impl<T: DdcTransport> DisplayService<T> {
                     .map(|input| InputOption {
                         id: input.id.clone(),
                         label: input.label.clone(),
+                        supported: profile.capabilities.input_switch,
+                        transport: "configured".into(),
+                        reason: None,
+                        hint: None,
                     })
                     .collect(),
                 matched_display_ids: self
@@ -654,16 +853,23 @@ impl<T: DdcTransport> DisplayService<T> {
         let index = self.require_index(display_id)?;
         let snapshot = self.ensure_snapshot(index, true)?;
 
-        let (display_info, profile) = {
+        let (display_info, profile, raw_support) = {
             let display = &self.displays[index];
             let inputs = display
                 .profile
                 .inputs
                 .iter()
-                .map(|input| DiagnosticInput {
-                    id: input.id.clone(),
-                    label: input.label.clone(),
-                    selector: describe_selector(&input.selector),
+                .map(|input| {
+                    let availability = display.input_availability(input);
+                    DiagnosticInput {
+                        id: input.id.clone(),
+                        label: input.label.clone(),
+                        selector: describe_selector(&input.selector),
+                        supported: availability.supported,
+                        transport: availability.transport,
+                        reason: availability.reason,
+                        hint: availability.hint,
+                    }
                 })
                 .collect();
             (
@@ -680,9 +886,13 @@ impl<T: DdcTransport> DisplayService<T> {
                     profile_label: display.profile.label.clone(),
                     profile_matched: display.profile_matched,
                     capabilities_error: display.capabilities_error.clone(),
+                    raw_i2c_available: display.raw_support.available,
+                    raw_i2c_backend: display.raw_support.backend.clone(),
+                    raw_i2c_reason: display.raw_support.reason.clone(),
                     inputs,
                 },
                 display.profile.clone(),
+                display.raw_support.clone(),
             )
         };
 
@@ -713,11 +923,25 @@ impl<T: DdcTransport> DisplayService<T> {
             Err(error) => (None, Some(error.message)),
         };
 
-        let notes = vec![
+        let mut notes = vec![
             "DDC/CI 指令只应在显示器当前活动输入源所在的主机上发起。".into(),
             "音量/静音的 auto 能力以实际读取结果为准；不支持时控件会禁用。".into(),
             "输入源 VCP 值来自内置配置或用户配置，请用实际切换结果核验。".into(),
         ];
+        if raw_support.available {
+            notes.push(format!(
+                "原始 I2C 后端可用（{}）：标准 DDC/CI 被忽略时可回退到 VCP 0xF4 @0x50。",
+                raw_support.backend.as_deref().unwrap_or("raw")
+            ));
+        } else {
+            notes.push(format!(
+                "原始 I2C 后端不可用：{}",
+                raw_support
+                    .reason
+                    .as_deref()
+                    .unwrap_or("当前平台或 GPU 不提供原始 I2C 访问。")
+            ));
+        }
 
         Ok(DiagnosticReport {
             generated_at: now_rfc3339(),
@@ -795,6 +1019,8 @@ impl<T: DdcTransport> DisplayService<T> {
                         profile_matched,
                         handle: raw.handle,
                         capabilities_error: raw.capabilities_error,
+                        raw_support: raw.raw_support,
+                        unsupported_inputs: HashMap::new(),
                         snapshot: None,
                     });
                 }
@@ -894,12 +1120,14 @@ impl<T: DdcTransport> DisplayService<T> {
                             input_id: Some(input.id.clone()),
                             label: Some(input.label.clone()),
                             raw_value: Some(reading.value),
+                            transport: Some("standard".into()),
                             read_error: None,
                         },
                         None => CurrentInputState {
                             input_id: None,
                             label: None,
                             raw_value: Some(reading.value),
+                            transport: Some("standard".into()),
                             read_error: Some(format!(
                                 "当前输入源值 0x{:04X} 未在配置中定义。",
                                 reading.value
@@ -1215,20 +1443,116 @@ fn vcp_read(code: &u8, result: Result<VcpReading, TransportError>) -> VcpRead {
     }
 }
 
+fn write_selector<T: DdcTransport>(
+    transport: &T,
+    handle: &mut T::Handle,
+    selector: &InputSelector,
+) -> Result<(), TransportError> {
+    match selector {
+        InputSelector::Standard {
+            vcp_code, value, ..
+        } => transport.write_vcp(handle, *vcp_code, *value),
+        InputSelector::Vendor {
+            vcp_code,
+            value,
+            data_address,
+            write_mode,
+            ..
+        } => match write_mode {
+            VendorWriteMode::Table => {
+                transport.table_write(handle, *vcp_code, *data_address, &value.to_be_bytes())
+            }
+            VendorWriteMode::Vcp => transport.write_vcp(handle, *vcp_code, *value),
+        },
+        InputSelector::Raw {
+            vcp_code,
+            value,
+            source_address,
+            ..
+        } => transport.raw_write(handle, *source_address, *vcp_code, *value),
+    }
+}
+
+fn write_raw_selector<T: DdcTransport>(
+    transport: &T,
+    handle: &mut T::Handle,
+    raw: &RawSelector,
+) -> Result<(), TransportError> {
+    transport.raw_write(handle, raw.source_address, raw.vcp_code, raw.value)
+}
+
+fn read_input_value<T: DdcTransport>(
+    transport: &T,
+    handle: &mut T::Handle,
+    code: u8,
+) -> Result<u16, TransportError> {
+    transport
+        .read_vcp(handle, code)
+        .map(|reading| reading.value)
+}
+
+fn input_accepted(profile: &DisplayProfile, input_id: &str, value: u16) -> bool {
+    profile
+        .input(input_id)
+        .and_then(|input| input.selector.verify_value())
+        == Some(value)
+}
+
+fn describe_input(profile: &DisplayProfile, value: u16) -> String {
+    profile
+        .input_for_value(value)
+        .map(|input| format!("{} (0x{value:04X})", input.label))
+        .unwrap_or_else(|| format!("未知输入 (0x{value:04X})"))
+}
+
 fn describe_selector(selector: &InputSelector) -> String {
     match selector {
-        InputSelector::Standard { vcp_code, value } => {
-            format!("standard: VCP 0x{vcp_code:02X} = 0x{value:04X}")
+        InputSelector::Standard {
+            vcp_code,
+            value,
+            raw_fallback,
+        } => {
+            let mut text = format!("standard: VCP 0x{vcp_code:02X} = 0x{value:04X}");
+            if let Some(raw) = raw_fallback {
+                text.push_str(&format!(
+                    "; raw fallback: VCP 0x{:02X} = 0x{:04X} @0x{:02X}",
+                    raw.vcp_code, raw.value, raw.source_address
+                ));
+            }
+            text
         }
         InputSelector::Vendor {
             vcp_code,
             value,
             data_address,
             write_mode,
-        } => format!(
-            "vendor: {:?}, VCP 0x{vcp_code:02X} = 0x{value:04X}, addr 0x{data_address:04X}",
-            write_mode
-        ),
+            raw_fallback,
+        } => {
+            let mut text = format!(
+                "vendor: {:?}, VCP 0x{vcp_code:02X} = 0x{value:04X}, addr 0x{data_address:04X}",
+                write_mode
+            );
+            if let Some(raw) = raw_fallback {
+                text.push_str(&format!(
+                    "; raw fallback: VCP 0x{:02X} = 0x{:04X} @0x{:02X}",
+                    raw.vcp_code, raw.value, raw.source_address
+                ));
+            }
+            text
+        }
+        InputSelector::Raw {
+            vcp_code,
+            value,
+            source_address,
+            verify_value,
+        } => {
+            let mut text =
+                format!("raw: VCP 0x{vcp_code:02X} = 0x{value:04X} @0x{source_address:02X}");
+            if let Some(verify) = verify_value {
+                text.push_str(&format!("; verify 0x{verify:04X}"));
+            }
+            text
+        }
     }
 }
 
@@ -1256,12 +1580,16 @@ mod tests {
         values: BTreeMap<u8, VcpReading>,
         fail_reads: std::collections::HashSet<u8>,
         fail_writes: std::collections::HashSet<u8>,
+        ignored_writes: std::collections::HashSet<u8>,
+        raw_available: bool,
+        raw_fail_writes: bool,
+        raw_ignored: bool,
         writes: Vec<(u8, u16)>,
         reads: Vec<u8>,
+        raw_writes: Vec<(u8, u8, u16)>,
         table_writes: Vec<(u8, u16, Vec<u8>)>,
         capabilities: String,
         capabilities_fail: bool,
-        sticky_input: bool,
         link_online: Option<bool>,
     }
 
@@ -1269,12 +1597,13 @@ mod tests {
         fn lg() -> Self {
             let mut values = BTreeMap::new();
             values.insert(0x10, reading(128, 255));
-            values.insert(0x60, reading(0x0F, 0x10));
+            values.insert(0x60, reading(0x0F, 0x12));
             values.insert(0x62, reading(64, 255));
             values.insert(0x8D, reading(1, 2));
             values.insert(0xDF, reading(0x0202, 0));
             Self {
                 values,
+                raw_available: true,
                 capabilities: "(prot(monitor)type(lcd)model(LG 27UL850)vcp(10 60 62 8D DF))".into(),
                 ..Self::default()
             }
@@ -1367,6 +1696,11 @@ mod tests {
                 edid_serial: self.serial_number.map(|_| 4242),
                 edid: None,
                 capabilities_error: capabilities_fail.then(|| "simulated caps failure".into()),
+                raw_support: if self.state.borrow().raw_available {
+                    RawSupport::available("nvapi")
+                } else {
+                    RawSupport::unavailable(Some("nvapi"), "simulated raw backend unavailable")
+                },
             }])
         }
 
@@ -1400,7 +1734,7 @@ mod tests {
                 )));
             }
             state.writes.push((code, value));
-            if state.sticky_input && code == 0x60 {
+            if state.ignored_writes.contains(&code) {
                 return Ok(());
             }
             let maximum = state.values.get(&code).map_or(0, |entry| entry.maximum);
@@ -1438,6 +1772,57 @@ mod tests {
 
         fn link_online(&self, display: &Self::Handle) -> Option<bool> {
             display.state.borrow().link_online
+        }
+
+        fn raw_read(
+            &self,
+            display: &mut Self::Handle,
+            _source: u8,
+            code: u8,
+        ) -> Result<VcpReading, TransportError> {
+            let state = display.state.borrow();
+            if state.fail_reads.contains(&code) {
+                return Err(TransportError::communication(format!(
+                    "simulated raw read failure for 0x{code:02X}"
+                )));
+            }
+            state.values.get(&code).copied().ok_or_else(|| {
+                TransportError::unsupported(format!("VCP 0x{code:02X} is not supported"))
+            })
+        }
+
+        fn raw_write(
+            &self,
+            display: &mut Self::Handle,
+            source: u8,
+            code: u8,
+            value: u16,
+        ) -> Result<(), TransportError> {
+            let mut state = display.state.borrow_mut();
+            if state.raw_fail_writes {
+                return Err(TransportError::communication(format!(
+                    "simulated raw write failure for 0x{code:02X}"
+                )));
+            }
+            state.raw_writes.push((source, code, value));
+            if state.raw_ignored {
+                return Ok(());
+            }
+            let mapped = if code == 0xF4 {
+                match value {
+                    0x90 => 0x11,
+                    0x91 => 0x12,
+                    0xD0 | 0xD1 => 0x0F,
+                    0xD2 => 0x10,
+                    other => other,
+                }
+            } else {
+                value
+            };
+            let target = if code == 0xF4 { 0x60 } else { code };
+            let maximum = state.values.get(&target).map_or(0, |entry| entry.maximum);
+            state.values.insert(target, reading(mapped, maximum));
+            Ok(())
         }
     }
 
@@ -1493,26 +1878,90 @@ mod tests {
     }
 
     #[test]
+    fn ignored_input_write_falls_back_to_raw_i2c() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        state.borrow_mut().ignored_writes.insert(0x60);
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let snapshot = service.switch_input(&id, "typec").unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("typec"));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x10));
+        assert_eq!(
+            snapshot.current_input.transport.as_deref(),
+            Some("raw:nvapi")
+        );
+
+        let state = state.borrow();
+        assert_eq!(state.writes, vec![(0x60, 0x10)]);
+        assert_eq!(state.raw_writes, vec![(0x50, 0xF4, 0xD2)]);
+        assert_eq!(state.values[&0x60].value, 0x10);
+    }
+
+    #[test]
+    fn ignored_input_without_raw_backend_is_marked_unsupported() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.ignored_writes.insert(0x60);
+            state.raw_available = false;
+        }
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let error = service.switch_input(&id, "typec").unwrap_err();
+        assert_eq!(error.code, "input_unsupported");
+        assert!(error.message.contains("TypeC"));
+        assert!(error.hint.is_some());
+        assert!(state.borrow().raw_writes.is_empty());
+
+        let list = service.list_displays(false);
+        let typec = list.displays[0]
+            .inputs
+            .iter()
+            .find(|input| input.id == "typec")
+            .unwrap();
+        assert!(!typec.supported);
+        assert!(typec
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("原始 I2C"));
+        assert!(!list.displays[0].raw_i2c_available);
+
+        let snapshot = service.snapshot(&id, false).unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x0F));
+    }
+
+    #[test]
     fn switch_failure_is_actionable_and_invalidates_cache() {
         let transport = FakeTransport::lg();
         let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.fail_writes.insert(0x60);
+            state.raw_fail_writes = true;
+        }
         let (mut service, _temp) = service(transport);
         let id = only_display_id(&mut service);
-        state.borrow_mut().fail_writes.insert(0x60);
 
         let error = service.switch_input(&id, "hdmi2").unwrap_err();
         assert_eq!(error.code, "ddc_error");
         assert!(error.hint.is_some());
         assert!(state.borrow().writes.is_empty());
+        assert!(state.borrow().raw_writes.is_empty());
     }
 
     #[test]
     fn switch_input_reports_unconfirmed_switch_and_refreshes() {
-        let transport = FakeTransport::lg();
+        let transport = FakeTransport::generic();
         let state = transport.state.clone();
+        state.borrow_mut().ignored_writes.insert(0x60);
         let (mut service, _temp) = service(transport);
         let id = only_display_id(&mut service);
-        state.borrow_mut().sticky_input = true;
 
         let error = service.switch_input(&id, "hdmi1").unwrap_err();
         assert_eq!(error.code, "switch_unconfirmed");
@@ -1569,6 +2018,49 @@ mod tests {
                 "a failed readback must not be retried"
             );
         }
+    }
+
+    #[test]
+    fn both_transports_ignored_marks_port_unsupported() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        {
+            let mut state = state.borrow_mut();
+            state.ignored_writes.insert(0x60);
+            state.raw_ignored = true;
+        }
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let error = service.switch_input(&id, "hdmi1").unwrap_err();
+        assert_eq!(error.code, "input_unsupported");
+        assert!(error.message.contains("HDMI1"));
+        assert_eq!(state.borrow().raw_writes.last(), Some(&(0x50, 0xF4, 0x90)));
+
+        let list = service.list_displays(false);
+        let hdmi1 = list.displays[0]
+            .inputs
+            .iter()
+            .find(|input| input.id == "hdmi1")
+            .unwrap();
+        assert!(!hdmi1.supported);
+        assert!(hdmi1
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("原始 I2C"));
+
+        // A successful switch clears the runtime unsupported mark.
+        state.borrow_mut().ignored_writes.clear();
+        state.borrow_mut().raw_ignored = false;
+        service.switch_input(&id, "hdmi1").unwrap();
+        let list = service.list_displays(false);
+        let hdmi1 = list.displays[0]
+            .inputs
+            .iter()
+            .find(|input| input.id == "hdmi1")
+            .unwrap();
+        assert!(hdmi1.supported);
     }
 
     #[test]

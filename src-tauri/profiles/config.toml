@@ -64,10 +64,5 @@ accelerator = ""
 # [profile_overrides.lg-27ul850.capabilities.brightness]
 # max = 100
 #
-# [[profile_overrides.lg-27ul850.inputs]]
-# id = "typec"
-# label = "TypeC"
-# [profile_overrides.lg-27ul850.inputs.selector]
-# type = "standard"
-# vcp_code = 0x60
-# value = 0xD1
+# To change input codes, override the whole `inputs` array with all four entries;
+# see docs/CONFIGURATION.md section 6.

@@ -9,7 +9,7 @@ id = "lg-27ul850"
 label = "LG 27UL850"
 priority = 100
 current_input_vcp_code = 0x60
-match = { vendor_id = "GSM", model_name_any = ["*27UL850*"] }
+match = { model_name_any = ["*27UL850*", "*UL850*"] }
 
 [profiles.capabilities]
 input_switch = true
@@ -34,10 +34,10 @@ vcp_code = 0x8D
 on_value = 1
 off_value = 2
 
-# The 27UL850 advertises the MCCS standard input values in its capability
-# string (60( 11 12 0F 10)) and reports them on readback. Some older LG firmware
-# only accepts the vendor aliases 0x90/0x91/0xD0/0xD1; override them in the user
-# config if "诊断信息" shows a different mapping.
+# Input values verified against LG 27UL850 firmware whose VCP 0x60 capabilities
+# report (11 12 0F 10). Some LG firmware ignores the standard write and only
+# accepts the alternate command set (VCP 0xF4 from DDC source address 0x50);
+# the raw fallback is used automatically when the standard write is ignored.
 [[profiles.inputs]]
 id = "hdmi1"
 label = "HDMI1"
@@ -45,6 +45,10 @@ label = "HDMI1"
 type = "standard"
 vcp_code = 0x60
 value = 0x11
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0x90
+source_address = 0x50
 
 [[profiles.inputs]]
 id = "hdmi2"
@@ -53,6 +57,10 @@ label = "HDMI2"
 type = "standard"
 vcp_code = 0x60
 value = 0x12
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0x91
+source_address = 0x50
 
 [[profiles.inputs]]
 id = "dp"
@@ -61,7 +69,12 @@ label = "DP"
 type = "standard"
 vcp_code = 0x60
 value = 0x0F
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0xD0
+source_address = 0x50
 
+# USB-C is exposed as the second DisplayPort input (0x10) on this firmware.
 [[profiles.inputs]]
 id = "typec"
 label = "TypeC"
@@ -69,6 +82,10 @@ label = "TypeC"
 type = "standard"
 vcp_code = 0x60
 value = 0x10
+[profiles.inputs.selector.raw_fallback]
+vcp_code = 0xF4
+value = 0xD2
+source_address = 0x50
 
 [[profiles]]
 # macOS has no EDID blob for external displays on Apple Silicon, so the Windows

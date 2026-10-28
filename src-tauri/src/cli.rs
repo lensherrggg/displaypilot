@@ -390,13 +390,35 @@ fn print_display_list(list: &crate::models::DisplayList) {
                 .map(|model| format!("0x{model:04X}"))
                 .unwrap_or_else(|| "—".into())
         );
+        if display.raw_i2c_available {
+            println!(
+                "     原始 I2C：可用（{}）",
+                display.raw_i2c_backend.as_deref().unwrap_or("raw")
+            );
+        } else {
+            println!(
+                "     原始 I2C：不可用（{}）",
+                display.raw_i2c_reason.as_deref().unwrap_or("未知原因")
+            );
+        }
         if display.inputs.is_empty() {
             println!("     输入源：未配置");
         } else {
             let inputs = display
                 .inputs
                 .iter()
-                .map(|input| format!("{}={}", input.id, input.label))
+                .map(|input| {
+                    if input.supported {
+                        format!("{}={}（{}）", input.id, input.label, input.transport)
+                    } else {
+                        format!(
+                            "{}={}（不支持：{}）",
+                            input.id,
+                            input.label,
+                            input.reason.as_deref().unwrap_or("未知原因")
+                        )
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" · ");
             println!("     输入源：{inputs}");
@@ -415,9 +437,45 @@ fn print_diagnostics(report: &crate::models::DiagnosticReport) {
         report.display.name, report.display.id, report.display.backend, report.display.profile_id
     );
     println!(
-        "当前输入：{}",
-        report.current_input.label.as_deref().unwrap_or("未知")
+        "当前输入：{}{}",
+        report.current_input.label.as_deref().unwrap_or("未知"),
+        report
+            .current_input
+            .transport
+            .as_deref()
+            .map(|transport| format!("（{transport}）"))
+            .unwrap_or_default()
     );
+    if report.display.raw_i2c_available {
+        println!(
+            "原始 I2C：可用（{}）",
+            report.display.raw_i2c_backend.as_deref().unwrap_or("raw")
+        );
+    } else {
+        println!(
+            "原始 I2C：不可用（{}）",
+            report
+                .display
+                .raw_i2c_reason
+                .as_deref()
+                .unwrap_or("未知原因")
+        );
+    }
+    if !report.display.inputs.is_empty() {
+        println!("输入源：");
+        for input in &report.display.inputs {
+            let status = if input.supported {
+                format!("{}（{}）", input.label, input.transport)
+            } else {
+                format!(
+                    "{}（不支持：{}）",
+                    input.label,
+                    input.reason.as_deref().unwrap_or("未知原因")
+                )
+            };
+            println!("  {} {} · {}", input.id, status, input.selector);
+        }
+    }
     println!(
         "亮度：{} · 音量：{} · 静音：{}",
         percent_label(report.brightness.percent),

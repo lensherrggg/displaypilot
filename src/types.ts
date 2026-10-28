@@ -7,6 +7,10 @@ export interface AppError {
 export interface InputOption {
   id: string;
   label: string;
+  supported: boolean;
+  transport: string;
+  reason: string | null;
+  hint: string | null;
 }
 
 export interface DisplaySummary {
@@ -23,6 +27,9 @@ export interface DisplaySummary {
   inputs: InputOption[];
   inputSwitchSupported: boolean;
   currentInputVcpCode: number;
+  rawI2cAvailable: boolean;
+  rawI2cBackend: string | null;
+  rawI2cReason: string | null;
 }
 
 export interface DisplayList {
@@ -36,6 +43,7 @@ export interface CurrentInputState {
   inputId: string | null;
   label: string | null;
   rawValue: number | null;
+  transport: string | null;
   readError: string | null;
 }
 
@@ -127,6 +135,10 @@ export interface DiagnosticInput {
   id: string;
   label: string;
   selector: string;
+  supported: boolean;
+  transport: string;
+  reason: string | null;
+  hint: string | null;
 }
 
 export interface DiagnosticDisplay {
@@ -142,6 +154,9 @@ export interface DiagnosticDisplay {
   profileLabel: string;
   profileMatched: boolean;
   capabilitiesError: string | null;
+  rawI2cAvailable: boolean;
+  rawI2cBackend: string | null;
+  rawI2cReason: string | null;
   inputs: DiagnosticInput[];
 }
 

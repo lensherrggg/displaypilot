@@ -23,20 +23,58 @@ const display: DisplaySummary = {
   modelName: "LG 27UL850-W",
   serialNumber: "DEMO1234",
   inputs: [
-    { id: "hdmi1", label: "HDMI1" },
-    { id: "hdmi2", label: "HDMI2" },
-    { id: "dp", label: "DP" },
-    { id: "typec", label: "TypeC" },
+    {
+      id: "hdmi1",
+      label: "HDMI1",
+      supported: true,
+      transport: "standard+raw:nvapi",
+      reason: null,
+      hint: null,
+    },
+    {
+      id: "hdmi2",
+      label: "HDMI2",
+      supported: true,
+      transport: "standard+raw:nvapi",
+      reason: null,
+      hint: null,
+    },
+    {
+      id: "dp",
+      label: "DP",
+      supported: true,
+      transport: "standard+raw:nvapi",
+      reason: null,
+      hint: null,
+    },
+    {
+      id: "typec",
+      label: "TypeC",
+      supported: true,
+      transport: "standard+raw:nvapi",
+      reason: null,
+      hint: null,
+    },
   ],
   inputSwitchSupported: true,
   currentInputVcpCode: 0x60,
+  rawI2cAvailable: true,
+  rawI2cBackend: "nvapi",
+  rawI2cReason: null,
 };
 
 const inputValues: Record<string, number> = {
+  hdmi1: 0x11,
+  hdmi2: 0x12,
+  dp: 0x0f,
+  typec: 0x10,
+};
+
+const rawFallbackValues: Record<string, number> = {
   hdmi1: 0x90,
   hdmi2: 0x91,
   dp: 0xd0,
-  typec: 0xd1,
+  typec: 0xd2,
 };
 
 let general: GeneralConfig = {
@@ -57,6 +95,7 @@ function currentInput() {
     inputId: input?.id ?? null,
     label: input?.label ?? null,
     rawValue: input ? inputValues[input.id] ?? null : null,
+    transport: input ? "standard" : null,
     readError: null,
   };
 }
@@ -110,7 +149,7 @@ function displayList(): DisplayList {
 
 function configInfo(): ConfigInfo {
   return {
-    version: "0.1.0",
+    version: "0.2.0",
     os: "windows",
     arch: "x86_64",
     configPath: "C:\\Users\\demo\\AppData\\Roaming\\DisplayPilot\\config.toml",
@@ -186,10 +225,23 @@ function diagnosticReport(): DiagnosticReport {
       profileLabel: display.profileLabel,
       profileMatched: true,
       capabilitiesError: null,
+      rawI2cAvailable: true,
+      rawI2cBackend: "nvapi",
+      rawI2cReason: null,
       inputs: display.inputs.map((input) => ({
         id: input.id,
         label: input.label,
-        selector: `standard: VCP 0x60 = 0x${(inputValues[input.id] ?? 0).toString(16).toUpperCase()}`,
+        selector: `standard: VCP 0x60 = 0x${(inputValues[input.id] ?? 0)
+          .toString(16)
+          .padStart(2, "0")
+          .toUpperCase()}; raw fallback: VCP 0xF4 = 0x${(rawFallbackValues[input.id] ?? 0)
+          .toString(16)
+          .padStart(2, "0")
+          .toUpperCase()} @0x50`,
+        supported: input.supported,
+        transport: input.transport,
+        reason: input.reason,
+        hint: input.hint,
       })),
     },
     currentInput: state.currentInput,

@@ -11,8 +11,11 @@ DisplayPilot 是一个跨平台的菜单栏 / 系统托盘小工具，用 DDC/CI
 - **可诊断**：复制包含显示器身份、VCP 读数与能力字符串的报告，便于定位固件差异。
 - **命令行兜底**：图形界面之外保留 `list / switch / brightness / volume / mute / diagnose / config` 子命令。
 
-> 当前版本 **0.2.5**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
-> （LG HDR 4K）上完成菜单栏、DDC/CI 读取与真实写入验证。其他显示器仍需按测试清单验收。
+> 当前版本 **0.3.0**。Windows 已完成构建、CLI 与界面冒烟验证，并在 LG 27UL850 上实测 DDC/CI：
+> HDMI / DP 输入切换、亮度、音量与静音均可用；LG USB-C 所需的厂商专用寻址
+> （VCP `0xF4` @ DDC 源地址 `0x50`）在 Windows 上通过可插拔的 NVAPI 原始 I2C 后端自动回退，
+> 没有原始 I2C 后端的 GPU / 平台会明确把端口标记为“不支持”。macOS 已在 Apple Silicon + LG 27UL850
+> （LG HDR 4K）上完成菜单栏、DDC/CI 读取与真实写入验证。
 
 ## 界面
 
@@ -29,9 +32,9 @@ Windows 上使用同布局的 CSS 半透明面板；macOS 上额外应用 vibran
 
 | 平台 | 状态 | 说明 |
 | --- | --- | --- |
-| Windows 10/11 x64 | 支持，已完成构建、CLI 与界面冒烟验证 | 通过 `ddc-winapi` 后端访问显示器；需要 WebView2 Runtime 与 MSVC 工具链。真实 VCP 写入需 DDC/CI 可用硬件。 |
-| macOS 11+（Intel / Apple Silicon） | 支持，已在 Apple Silicon + LG 27UL850 上实机验证 | 通过 `ddc-macos` 后端访问；以 Accessory / `LSUIElement` 模式运行（无 Dock 图标），面板使用 vibrancy 并锚定到菜单栏状态项。 |
-| Linux | 未正式支持 | 依赖层可能可用，但未提供打包、测试与桌面集成。 |
+| Windows 10/11 x64 | 支持，已在 LG 27UL850 上验证 DDC/CI | 通过 `ddc-winapi` 后端访问显示器；需要 WebView2 Runtime 与 MSVC 工具链。NVIDIA 显卡额外启用 NVAPI 原始 I2C，可发送 LG 厂商专用寻址（`0xF4` @ `0x50`）并在标准 DDC/CI 被忽略时自动回退；AMD / Intel 显卡没有公开的原始 I2C 接口，相关端口会明确标记为“不支持”。 |
+| macOS 11+（Intel / Apple Silicon） | 支持，已在 Apple Silicon + LG 27UL850 上实机验证 | 通过 `ddc-macos` 后端访问；以 Accessory / `LSUIElement` 模式运行（无 Dock 图标），面板使用 vibrancy 并锚定到菜单栏状态项。原始 I2C（IOAVService）尚未实现，需要厂商专用寻址的端口会标记为“不支持”。 |
+| Linux | 未正式支持 | 依赖层可能可用，但未提供打包、测试与桌面集成；原始 I2C 后端未实现。 |
 
 DDC/CI 的硬性前提：
 
@@ -179,26 +182,32 @@ displaypilot --help
                │ IPC（camelCase JSON）
 ┌──────────────▼──────────────┐
 │ Tauri commands              │
-│  └─ WorkerClient（4s 超时）  │
+│  └─ WorkerClient（分级超时）  │
 └──────────────┬──────────────┘
                │ mpsc + 请求 id
 ┌──────────────▼──────────────┐
 │ 专用工作线程                 │
 │  └─ DisplayService          │
 │      ├─ ProfileCatalog      │
-│      └─ DdcTransport        │
+│      ├─ DdcTransport        │
+│      └─ RawI2cDevice        │
 └──────────────┬──────────────┘
-               │ ddc-hi（winapi / macos）
+               │ ddc-hi（winapi / macos）+ 可选原始 I2C（NVAPI）
 ┌──────────────▼──────────────┐
         显示器 DDC/CI
 ```
 
 - DDC 句柄不是 `Send`，因此只存在于一个专用线程；所有硬件访问串行执行，IPC 调用通过
-  `spawn_blocking` 等待结果，最长 4 秒，避免 UI 卡死。
+  `spawn_blocking` 等待结果；普通操作最多 10 秒，枚举 20 秒，诊断 30 秒，避免 UI 卡死。
 - 显示器 ID 由厂商、型号、序列号 / EDID 序列（必要时才用后端路径）经 FNV-1a 生成，
   与枚举顺序无关，重启后保持稳定。
 - 输入源、VCP 值、能力范围和写入方式全部来自配置档；服务层只执行选择器，不判断机型。
+- 传输后端可插拔：`DdcTransport` 提供标准 DDC/CI 读写，`RawI2cDevice` 提供指定源地址的原始
+  I2C 读写。Windows 上按显示器输出映射 NVAPI，标准写入被忽略时自动降级；其他平台返回明确的
+  不可用原因。
 - 读取快照时统一探测当前输入、亮度、音量和静音；结果缓存，只有操作、刷新或配置重载才失效。
+- 每个输入源在运行时记录支持状态与传输方式；标准与原始 I2C 都无法生效时，端口会在 UI、
+  CLI 与诊断中标记为“不支持”并保留失败原因。
 - 日志按 2MB 轮转，保留 3 个备份（`.1`–`.3`）；不记录网络信息，因为程序不联网。
 
 架构取舍、错误模型、平台差异和测试策略见 **[docs/DESIGN.md](docs/DESIGN.md)**。
@@ -222,6 +231,7 @@ DisplayPilot/
 │       ├── worker.rs        # 专用 DDC 工作线程与请求超时
 │       ├── service.rs       # 业务逻辑、快照、诊断
 │       ├── transport.rs     # DDC/CI 传输抽象与 ddc-hi 实现
+│       ├── raw_i2c.rs       # 原始 I2C 后端（Windows NVAPI）与 DDC/CI 封包
 │       ├── profile.rs       # 档案模型、匹配与合并
 │       ├── config.rs        # 路径、TOML 读取与安全更新
 │       ├── commands.rs      # IPC 命令
@@ -248,9 +258,9 @@ npm run check          # 以上全部
 
 ## 版本管理
 
-- 当前版本 **0.2.5**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
+- 当前版本 **0.3.0**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
 - `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（以及 `Cargo.lock`）由脚本同步。
-- 发版步骤：`npm run version:set -- 0.2.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
+- 发版步骤：`npm run version:set -- 0.3.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
 - 每次发布打 `v<version>` 标签。详细规则见 **[docs/VERSIONING.md](docs/VERSIONING.md)**。
 
 ## 隐私
@@ -265,6 +275,7 @@ DisplayPilot 不包含遥测、不发起网络请求，也不需要账号。所�
 | 未发现显示器 | 唤醒显示器；在 OSD 中启用 DDC/CI；改用直连线缆；点击「重新扫描」。 |
 | 输入源切换失败 | 用「复制诊断」确认 VCP `0x60` 与能力字符串；在 `profile_overrides` 中修正输入值或改用厂商选择器。 |
 | macOS 上配置档显示为通用 / 亮度百分比偏低 | Apple Silicon 读不到 EDID，程序会用数值厂商与型号匹配；内置档案未覆盖的机型请在 `custom_profiles` 中用 `vendor_id = "1E6D"` 这类数值写法添加。 |
+| 切到 USB-C 提示“端口不支持” | 该固件（如 27UL850）的 USB-C 只接受厂商专用寻址，标准 DDC/CI 无法发送，且当前 GPU / 平台没有可用的原始 I2C 后端。使用 NVIDIA 显卡（应用会自动通过 NVAPI 回退），或把目标主机改接 HDMI / DP，也可以直接在显示器 OSD 中切换；UI 与诊断会列出具体原因。 |
 | 亮度可调但音量不可用 | 显示器可能不支持 `0x62`；`auto` 探测会禁用控件，属预期行为。可在配置中显式设为 `true` 强制显示。 |
 | 快捷键无效 | 查看设置页的注册状态；换用未被系统占用的组合键后重新加载配置。 |
 | 配置修改后没有生效 | 设置页点击「重新加载配置」；若文件解析失败，页面会显示具体错误。 |
