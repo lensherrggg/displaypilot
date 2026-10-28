@@ -127,6 +127,16 @@ pub trait DdcTransport {
     ) -> Result<(), TransportError>;
 
     fn capabilities_string(&self, display: &mut Self::Handle) -> Result<String, TransportError>;
+
+    /// Reports whether the display link is still up, when the backend can tell.
+    ///
+    /// A failed DDC read after an input switch is ambiguous: the panel may have
+    /// switched away (cutting DDC on the old host), or the bus may have wedged
+    /// while the panel stayed put. Backends that can query the link (`macOS`)
+    /// return `Some`, the others `None` and keep the older assumption.
+    fn link_online(&self, _display: &Self::Handle) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -273,5 +283,18 @@ impl DdcTransport for HardwareTransport {
             .trim_end_matches('\0')
             .trim()
             .to_string())
+    }
+
+    fn link_online(&self, display: &Self::Handle) -> Option<bool> {
+        #[cfg(target_os = "macos")]
+        {
+            let ddc_hi::Handle::MacOS(monitor) = &display.inner.handle;
+            Some(monitor.handle().is_online())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = display;
+            None
+        }
     }
 }

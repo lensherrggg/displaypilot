@@ -273,10 +273,11 @@ impl<T: DdcTransport> DisplayService<T> {
         // never shows "TypeC" while the monitor stays on HDMI1.
         let input_vcp_code = self.displays[index].profile.current_input_vcp_code;
         let target_value = selector.value();
-        let observed = {
+        let (observed, link_lost) = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
             let mut observed = None;
+            let mut link_lost = false;
             for delay_ms in [0u64, 500, 800] {
                 if delay_ms > 0 {
                     std::thread::sleep(Duration::from_millis(delay_ms));
@@ -289,14 +290,22 @@ impl<T: DdcTransport> DisplayService<T> {
                         }
                     }
                     Err(error) => {
-                        // Losing DDC usually means the display did switch.
                         log::debug!("Could not confirm input switch: {error}");
                         observed = None;
-                        break;
+                        match transport.link_online(&display.handle) {
+                            // The panel really left this input: DDC dies with it.
+                            Some(false) | None => {
+                                link_lost = true;
+                                break;
+                            }
+                            // The link is up, so the bus wedged and the panel
+                            // probably ignored the write. Retry before giving up.
+                            Some(true) => {}
+                        }
                     }
                 }
             }
-            observed
+            (observed, link_lost)
         };
         if let Some(value) = observed {
             if value != target_value {
@@ -313,6 +322,20 @@ impl<T: DdcTransport> DisplayService<T> {
                     "确认目标接口已接入信号源；LG 部分固件会忽略 USB-C 切换或在无信号时自动切回。",
                 ));
             }
+        } else if !link_lost {
+            // DDC stopped answering while the display still reports a live
+            // link, which means it never left this input (a real switch takes
+            // the link down with it). Do not claim success.
+            log::warn!(
+                "Input switch unverified: DDC stopped responding but the display link stayed up"
+            );
+            self.displays[index].snapshot = None;
+            self.last_used = Some(display_id.to_string());
+            return Err(AppError::new(
+                "switch_unconfirmed",
+                format!("无法确认已切换到{input_label}：显示器仍在线，但输入源读取无响应。"),
+            )
+            .with_hint("显示器可能忽略了本次切换；请通过显示器旋钮确认，必要时重新选择一次。"));
         }
 
         self.last_used = Some(display_id.to_string());
@@ -1249,6 +1272,7 @@ mod tests {
         capabilities: String,
         capabilities_fail: bool,
         sticky_input: bool,
+        link_online: Option<bool>,
     }
 
     impl FakeState {
@@ -1420,6 +1444,10 @@ mod tests {
             }
             Ok(state.capabilities.clone())
         }
+
+        fn link_online(&self, display: &Self::Handle) -> Option<bool> {
+            display.state.borrow().link_online
+        }
     }
 
     fn service(transport: FakeTransport) -> (DisplayService<FakeTransport>, tempfile::TempDir) {
@@ -1502,6 +1530,50 @@ mod tests {
         let snapshot = service.snapshot(&id, false).unwrap();
         assert_eq!(snapshot.current_input.input_id.as_deref(), Some("dp"));
         assert_eq!(snapshot.current_input.raw_value, Some(0xD0));
+    }
+
+    #[test]
+    fn switch_input_reports_unconfirmed_when_ddc_wedges_but_link_stays_up() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        state.borrow_mut().fail_reads.insert(0x60);
+        state.borrow_mut().link_online = Some(true);
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let error = service.switch_input(&id, "hdmi1").unwrap_err();
+        assert_eq!(error.code, "switch_unconfirmed");
+        assert!(error.message.contains("仍在线"));
+        assert!(error.hint.is_some());
+        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+    }
+
+    #[test]
+    fn switch_input_treats_lost_ddc_with_offline_link_as_success() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        state.borrow_mut().fail_reads.insert(0x60);
+        state.borrow_mut().link_online = Some(false);
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let snapshot = service.switch_input(&id, "hdmi1").unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
+        assert_eq!(snapshot.current_input.raw_value, Some(0x90));
+        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+    }
+
+    #[test]
+    fn switch_input_assumes_success_when_link_state_is_unknown() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        state.borrow_mut().fail_reads.insert(0x60);
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+
+        let snapshot = service.switch_input(&id, "hdmi1").unwrap();
+        assert_eq!(snapshot.current_input.input_id.as_deref(), Some("hdmi1"));
+        assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
     }
 
     #[test]
