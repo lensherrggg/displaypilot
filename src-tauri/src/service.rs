@@ -17,6 +17,13 @@ use crate::util::{
     clamp_percent, now_rfc3339, percent_to_raw, platform_info, raw_to_percent, stable_display_id,
 };
 
+/// Time the panel gets to change inputs before the readback.
+///
+/// Reading VCP 0x60 while the panel is still switching is what wedges the DDC
+/// handler on LG-class firmware, so this delay is intentional and must not be
+/// replaced by a short retry loop.
+const INPUT_SETTLE: Duration = Duration::from_millis(1_500);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickAction {
     Input(String),
@@ -96,6 +103,8 @@ pub struct DisplayService<T: DdcTransport> {
     discovery_error: Option<AppError>,
     discovered: bool,
     last_used: Option<String>,
+    /// Panel settle time before the input-switch readback; zero in tests.
+    input_settle: Duration,
 }
 
 impl<T: DdcTransport> DisplayService<T> {
@@ -144,6 +153,7 @@ impl<T: DdcTransport> DisplayService<T> {
             discovery_error: None,
             discovered: false,
             last_used: None,
+            input_settle: INPUT_SETTLE,
         })
     }
 
@@ -271,41 +281,30 @@ impl<T: DdcTransport> DisplayService<T> {
         // displays ignore the value, and LG firmware may fall back when the
         // target port has no signal. Confirm before claiming success so the UI
         // never shows "TypeC" while the monitor stays on HDMI1.
+        //
+        // Do not poll while the panel is switching, though. LG-class firmware
+        // wedges its DDC handler when VCP 0x60 is read right after the input
+        // command: the bus then answers reads but ignores every later input
+        // write until the monitor is power-cycled. Wait for the panel to
+        // settle, then read back exactly once.
         let input_vcp_code = self.displays[index].profile.current_input_vcp_code;
         let target_value = selector.value();
+        std::thread::sleep(self.input_settle);
         let (observed, link_lost) = {
             let transport = &self.transport;
             let display = &mut self.displays[index];
-            let mut observed = None;
-            let mut link_lost = false;
-            for delay_ms in [0u64, 500, 800] {
-                if delay_ms > 0 {
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                }
-                match transport.read_vcp(&mut display.handle, input_vcp_code) {
-                    Ok(reading) => {
-                        observed = Some(reading.value);
-                        if reading.value == target_value {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        log::debug!("Could not confirm input switch: {error}");
-                        observed = None;
-                        match transport.link_online(&display.handle) {
-                            // The panel really left this input: DDC dies with it.
-                            Some(false) | None => {
-                                link_lost = true;
-                                break;
-                            }
-                            // The link is up, so the bus wedged and the panel
-                            // probably ignored the write. Retry before giving up.
-                            Some(true) => {}
-                        }
-                    }
+            match transport.read_vcp(&mut display.handle, input_vcp_code) {
+                Ok(reading) => (Some(reading.value), false),
+                Err(error) => {
+                    log::debug!("Could not confirm input switch: {error}");
+                    // The panel really left this input: DDC dies with it. If the
+                    // backend cannot report the link we keep the older
+                    // assumption that the switch went through.
+                    let link_lost =
+                        matches!(transport.link_online(&display.handle), Some(false) | None);
+                    (None, link_lost)
                 }
             }
-            (observed, link_lost)
         };
         if let Some(value) = observed {
             if value != target_value {
@@ -319,7 +318,7 @@ impl<T: DdcTransport> DisplayService<T> {
                     format!("显示器未确认切换到{input_label}（当前输入值 0x{value:04X}）。"),
                 )
                 .with_hint(
-                    "确认目标接口已接入信号源；LG 部分固件会忽略 USB-C 切换或在无信号时自动切回。",
+                    "确认目标接口已接入信号源，且显示器 OSD 菜单已退出；LG 固件在信号超出面板范围时会自动切回。",
                 ));
             }
         } else if !link_lost {
@@ -335,7 +334,9 @@ impl<T: DdcTransport> DisplayService<T> {
                 "switch_unconfirmed",
                 format!("无法确认已切换到{input_label}：显示器仍在线，但输入源读取无响应。"),
             )
-            .with_hint("显示器可能忽略了本次切换；请通过显示器旋钮确认，必要时重新选择一次。"));
+            .with_hint(
+                "显示器可能忽略了本次切换或 OSD 菜单仍打开；退出菜单后重试，必要时给显示器断电重启。",
+            ));
         }
 
         self.last_used = Some(display_id.to_string());
@@ -1268,6 +1269,7 @@ mod tests {
         fail_reads: std::collections::HashSet<u8>,
         fail_writes: std::collections::HashSet<u8>,
         writes: Vec<(u8, u16)>,
+        reads: Vec<u8>,
         table_writes: Vec<(u8, u16, Vec<u8>)>,
         capabilities: String,
         capabilities_fail: bool,
@@ -1385,7 +1387,8 @@ mod tests {
             display: &mut Self::Handle,
             code: u8,
         ) -> Result<VcpReading, TransportError> {
-            let state = display.state.borrow();
+            let mut state = display.state.borrow_mut();
+            state.reads.push(code);
             if state.fail_reads.contains(&code) {
                 return Err(TransportError::communication(format!(
                     "simulated read failure for 0x{code:02X}"
@@ -1453,7 +1456,9 @@ mod tests {
     fn service(transport: FakeTransport) -> (DisplayService<FakeTransport>, tempfile::TempDir) {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::at(temp.path().join("config"), temp.path().join("logs"));
-        let service = DisplayService::new(transport, &paths).expect("service should initialize");
+        let mut service =
+            DisplayService::new(transport, &paths).expect("service should initialize");
+        service.input_settle = Duration::ZERO;
         (service, temp)
     }
 
@@ -1533,6 +1538,25 @@ mod tests {
     }
 
     #[test]
+    fn switch_input_reads_back_once_after_settling() {
+        let transport = FakeTransport::lg();
+        let state = transport.state.clone();
+        let (mut service, _temp) = service(transport);
+        let id = only_display_id(&mut service);
+        service.snapshot(&id, true).unwrap();
+        state.borrow_mut().reads.clear();
+
+        service.switch_input(&id, "hdmi1").unwrap();
+
+        let state = state.borrow();
+        assert_eq!(
+            state.reads,
+            vec![0x60],
+            "the panel must get exactly one readback, after the settle delay"
+        );
+    }
+
+    #[test]
     fn switch_input_reports_unconfirmed_when_ddc_wedges_but_link_stays_up() {
         let transport = FakeTransport::lg();
         let state = transport.state.clone();
@@ -1540,12 +1564,19 @@ mod tests {
         state.borrow_mut().link_online = Some(true);
         let (mut service, _temp) = service(transport);
         let id = only_display_id(&mut service);
+        service.snapshot(&id, true).unwrap();
+        state.borrow_mut().reads.clear();
 
         let error = service.switch_input(&id, "hdmi1").unwrap_err();
         assert_eq!(error.code, "switch_unconfirmed");
         assert!(error.message.contains("仍在线"));
         assert!(error.hint.is_some());
         assert_eq!(state.borrow().writes, vec![(0x60, 0x90)]);
+        assert_eq!(
+            state.borrow().reads,
+            vec![0x60],
+            "a wedged bus must not be polled again"
+        );
     }
 
     #[test]

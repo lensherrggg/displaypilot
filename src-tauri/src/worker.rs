@@ -12,8 +12,8 @@ use crate::transport::HardwareTransport;
 
 /// DDC/CI calls can block for a long time on flaky links. The UI must stay responsive,
 /// so every request is bounded and a timed-out job is left to finish on the worker.
-/// Input switching reads VCP 0x60 back to confirm the panel changed, which needs
-/// a little more headroom than a single read.
+/// Input switching lets the panel settle (1.5 s) before its single readback, so the
+/// switch command needs more headroom than a plain read.
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(4_000);
 
 pub enum Command {
