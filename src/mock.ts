@@ -149,7 +149,7 @@ function displayList(): DisplayList {
 
 function configInfo(): ConfigInfo {
   return {
-    version: "0.2.0",
+    version: "0.3.0",
     os: "windows",
     arch: "x86_64",
     configPath: "C:\\Users\\demo\\AppData\\Roaming\\DisplayPilot\\config.toml",
