@@ -12,6 +12,11 @@
   height: 100vh;
 }
 
+/* macOS shows native traffic lights, so the in-page close button is redundant. */
+html[data-platform="macos"] #close-settings {
+  display: none;
+}
+
 .settings-header {
   display: flex;
   align-items: center;

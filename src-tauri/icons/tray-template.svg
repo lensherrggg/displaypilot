@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44">
+  <!-- Monochrome menu bar template: the system tints black pixels for light/dark mode. -->
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4.5" y="6.5" width="35" height="24" rx="4" stroke-width="3" />
+    <path d="M16 40.5h12M22 30.5v10" stroke-width="3" />
+    <path d="M15.5 18.5h13M24.5 14.5l4 4-4 4" stroke-width="3" />
+  </g>
+</svg>

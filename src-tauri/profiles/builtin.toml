@@ -70,6 +70,72 @@ vcp_code = 0x60
 value = 0xD1
 
 [[profiles]]
+# macOS has no EDID blob for external displays on Apple Silicon, so the Windows
+# profile above cannot match. CoreGraphics exposes the numeric identifiers instead:
+# vendor 0x1E6D ("GSM") and product code 0x7706. The monitor reports input values
+# 0x11/0x12/0x0F/0x10 and a 0-100 range for brightness and volume.
+id = "lg-27ul850-macos"
+label = "LG 27UL850 (macOS)"
+priority = 110
+current_input_vcp_code = 0x60
+match = { backend = "macos", model_id = 30470 }
+
+[profiles.capabilities]
+input_switch = true
+
+[profiles.capabilities.brightness]
+supported = true
+vcp_code = 0x10
+min = 0
+max = 100
+step = 5
+
+[profiles.capabilities.volume]
+supported = "auto"
+vcp_code = 0x62
+min = 0
+max = 100
+step = 5
+
+[profiles.capabilities.mute]
+supported = "auto"
+vcp_code = 0x8D
+on_value = 1
+off_value = 2
+
+[[profiles.inputs]]
+id = "hdmi1"
+label = "HDMI1"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x11
+
+[[profiles.inputs]]
+id = "hdmi2"
+label = "HDMI2"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x12
+
+[[profiles.inputs]]
+id = "dp"
+label = "DP"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x0F
+
+[[profiles.inputs]]
+id = "typec"
+label = "TypeC"
+[profiles.inputs.selector]
+type = "standard"
+vcp_code = 0x60
+value = 0x10
+
+[[profiles]]
 id = "generic-ddc"
 label = "通用 DDC/CI 显示器"
 priority = -100

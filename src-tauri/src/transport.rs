@@ -154,25 +154,65 @@ impl DdcTransport for HardwareTransport {
             };
 
             let info = &display.info;
+            let mut vendor_id = info.manufacturer_id.clone();
+            let mut model_id = info.model_id;
+            let mut model_name = info.model_name.clone();
+            let mut serial_number = info.serial_number.clone();
+            let mut edid_serial = info.serial;
+            let mut edid = info.edid_data.clone();
+
+            // ddc-hi relies on the EDID blob, which macOS does not expose for external
+            // displays on Apple Silicon. CoreGraphics still reports the numeric EDID
+            // identifiers, so use those to keep profile matching and stable ids working.
+            #[cfg(target_os = "macos")]
+            {
+                let ddc_hi::Handle::MacOS(monitor) = &display.handle;
+                let cg = monitor.handle();
+                if vendor_id.is_none() {
+                    let vendor = cg.vendor_number();
+                    if vendor != 0 {
+                        vendor_id = Some(format!("{vendor:04X}"));
+                    }
+                }
+                if model_id.is_none() {
+                    let model = cg.model_number();
+                    if model != 0 {
+                        model_id = Some((model & 0xFFFF) as u16);
+                    }
+                }
+                if model_name.is_none() {
+                    model_name = monitor.product_name();
+                }
+                if serial_number.is_none() {
+                    serial_number = monitor.serial_number();
+                }
+                if edid_serial.is_none() {
+                    edid_serial = Some(cg.serial_number());
+                }
+                if edid.is_none() {
+                    edid = monitor.edid();
+                }
+            }
+
             log::info!(
                 "display backend={} id={} vendor={:?} model_id={:?} model={:?} serial={:?}",
                 info.backend,
                 info.id,
-                info.manufacturer_id,
-                info.model_id,
-                info.model_name,
-                info.serial_number
+                vendor_id,
+                model_id,
+                model_name,
+                serial_number
             );
 
             result.push(RawDisplay {
                 backend: info.backend.to_string(),
                 native_id: info.id.clone(),
-                vendor_id: info.manufacturer_id.clone(),
-                model_id: info.model_id,
-                model_name: info.model_name.clone(),
-                serial_number: info.serial_number.clone(),
-                edid_serial: info.serial,
-                edid: info.edid_data.clone(),
+                vendor_id,
+                model_id,
+                model_name,
+                serial_number,
+                edid_serial,
+                edid,
                 capabilities_error,
                 handle: HardwareDisplay { inner: display },
             });

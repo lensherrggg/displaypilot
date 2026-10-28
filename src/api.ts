@@ -7,6 +7,13 @@ import type { AppError } from "./types";
 export const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+export const isMac =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
+
+if (typeof document !== "undefined") {
+  document.documentElement.dataset.platform = isMac ? "macos" : "other";
+}
+
 export function normalizeError(value: unknown): AppError {
   if (value && typeof value === "object") {
     const candidate = value as Partial<AppError> & { message?: unknown };

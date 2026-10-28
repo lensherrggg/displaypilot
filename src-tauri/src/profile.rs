@@ -567,6 +567,26 @@ mod tests {
     }
 
     #[test]
+    fn macos_lg_profile_matches_numeric_identity() {
+        let catalog = ProfileCatalog::load(&UserConfig::default()).unwrap();
+        let identity = DisplayIdentity {
+            backend: "macos".into(),
+            native_id: "1".into(),
+            vendor_id: Some("1E6D".into()),
+            model_id: Some(30470),
+            model_name: Some("LG HDR 4K".into()),
+            serial_number: Some("44077".into()),
+            edid_serial: Some(44077),
+        };
+        let (profile, matched) = catalog.resolve(&identity);
+        assert!(matched);
+        assert_eq!(profile.id, "lg-27ul850-macos");
+        assert_eq!(profile.capabilities.brightness.max, 100);
+        assert_eq!(profile.input("dp").unwrap().selector.value(), 0x0F);
+        assert_eq!(profile.input("typec").unwrap().selector.value(), 0x10);
+    }
+
+    #[test]
     fn unknown_display_uses_generic_profile() {
         let catalog = ProfileCatalog::load(&UserConfig::default()).unwrap();
         let (profile, matched) = catalog.resolve(&identity("Dell U2723QE"));

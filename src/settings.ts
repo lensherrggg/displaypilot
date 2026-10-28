@@ -1,4 +1,4 @@
-import { api, isTauri, normalizeError, onEvent } from "./api";
+import { api, isMac, isTauri, normalizeError, onEvent } from "./api";
 import type {
   AppError,
   AppInfo,
@@ -74,7 +74,6 @@ const state: State = {
   busy: false,
 };
 
-const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 let toastTimer: number | undefined;
 
 function showToast(message: string): void {

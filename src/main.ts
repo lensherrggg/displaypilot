@@ -1,4 +1,4 @@
-import { api, isTauri, normalizeError, onEvent } from "./api";
+import { api, isMac, isTauri, normalizeError, onEvent } from "./api";
 import type {
   AppError,
   BootstrapPayload,
@@ -16,6 +16,14 @@ function el<T extends HTMLElement>(id: string): T {
     throw new Error(`Missing element #${id}`);
   }
   return element as T;
+}
+
+// A status bar panel is anchored to its icon; dragging it away would break that
+// relationship and the next tray click would snap it back.
+if (isMac) {
+  for (const node of document.querySelectorAll("[data-tauri-drag-region]")) {
+    node.removeAttribute("data-tauri-drag-region");
+  }
 }
 
 const ui = {

@@ -709,11 +709,12 @@ dependencies = [
 
 [[package]]
 name = "displaypilot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
  "ddc-hi",
+ "ddc-macos",
  "dirs 6.0.0",
  "log",
  "serde",

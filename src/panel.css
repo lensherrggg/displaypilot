@@ -21,6 +21,38 @@
   animation: panel-in 180ms var(--ease);
 }
 
+/*
+ * macOS: the native vibrancy view is the window background and is already
+ * rounded to the panel radius. Fill the window edge to edge and drop the CSS
+ * shadow, otherwise the 8px margin and the window shadow show up as a square
+ * frame around the card.
+ */
+html[data-platform="macos"] .panel {
+  height: 100vh;
+  margin: 0;
+  box-shadow: none;
+  /* Let the HudWindow material show through; keep enough tint for legibility. */
+  --bg-panel: rgba(246, 247, 250, 0.68);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-platform="macos"] .panel {
+    --bg-panel: rgba(28, 29, 33, 0.62);
+  }
+}
+
+@media (prefers-contrast: more) {
+  html[data-platform="macos"] .panel {
+    --bg-panel: #ffffff;
+  }
+}
+
+@media (prefers-color-scheme: dark) and (prefers-contrast: more) {
+  html[data-platform="macos"] .panel {
+    --bg-panel: #000000;
+  }
+}
+
 @keyframes panel-in {
   from {
     opacity: 0;
