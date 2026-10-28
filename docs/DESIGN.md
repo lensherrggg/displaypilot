@@ -69,9 +69,10 @@ DDC 句柄在部分后端不是 `Send`，不能在 Tauri 的异步运行时里�
 1. `main` 初始化日志；`cli::should_run` 判断是否执行 CLI。
 2. GUI 路径下 Windows 调用 `FreeConsole` 脱离控制台，避免出现黑框；CLI 路径保留标准输出。
 3. `app::run` 创建 `WorkerClient` 与 `AppState`，注册 IPC 命令、托盘和窗口事件。
-4. macOS 设置 `Accessory` 激活策略并隐藏 Dock 图标；主窗口应用 vibrancy（失败仅记录日志）。
-5. 托盘启动后加载配置与快捷键，显示主面板并发出首屏数据。
+4. macOS 设置 `Accessory` 激活策略并隐藏 Dock 图标，安装原生应用菜单（关于、设置 `⌘,`、编辑、窗口）；主窗口应用 vibrancy（失败仅记录日志）。
+5. 创建菜单栏状态项（模板图标）、加载配置与快捷键，然后显示主面板。
 6. 主窗口失焦时按 `general.auto_hide` 隐藏；关闭请求被拦截为隐藏；设置窗口独立显示。
+7. macOS 再次打开已运行的应用（`RunEvent::Reopen`）会重新显示面板。
 
 `AppState` 只保存 `WorkerClient`、路径、自动隐藏原子标志和快捷键状态，**不保存 DDC 句柄**。
 这是线程模型的硬约束，也是所有 IPC 都必须走 worker 的原因。
@@ -93,6 +94,9 @@ seed = vendor | model_id | model_name | sn:<serial>       （优先）
 
 - 枚举顺序、操作系统设备路径不参与前两种种子，因此重启、换 USB 口不会改变 ID。
 - 同一型号同序列号会得到同一 ID；没有序列号的设备只能退化为路径标识，这是 EDID 信息不足的固有限制。
+- Apple Silicon 上 CoreDisplay 不提供 EDID，`ddc-hi` 的厂商 / 型号字段为空。`transport.rs` 会从
+  `ddc_macos::Monitor` 补齐：`CGDisplay::vendor_number` / `model_number` / `serial_number`、
+  `product_name()` 与可选的 `edid()`。厂商因此是数值码（LG 为 `1E6D`）而不是 Windows 的三字母码（`GSM`）。
 - 发现后按显示名称、ID 排序，首台自动选中；上次使用的显示器 ID 若仍在线则优先保留。
 
 ## 6. 快照与能力探测
@@ -208,13 +212,15 @@ UI 以内联错误条显示，不使用模态弹窗。主要错误码：
 
 ### 面板
 
-- 360×620 无边框、透明、置顶、跳过任务栏；由 `app_window::position_near_tray` 定位到托盘附近。
+- 360×620 无边框、透明、置顶、跳过任务栏；由 `app_window::position_panel` 定位。macOS 居中于状态项下方并夹紧到工作区，Windows 定位到工作区右下角。
 - 结构：标题（显示器名 + 档案/后端）→ 显示器切换 → 输入源卡片网格 → 亮度卡 → 音频卡 → 状态行。
 - 控件使用原生 `<button>`、`<input type="range">`、`<output>`；滑块有 `aria-valuetext` 百分比。
 - 输入切换时按钮 `aria-busy`、显示“切换中…”，并禁用重复提交；成功用对勾与 `aria-label` 标识当前输入。
 - 亮度/音量拖动先更新数值显示，停止 **130ms** 后写入；键盘操作同样走防抖，但步进即时反馈。
 - 错误条 `role="alert"` 内联展示，可关闭；配置错误额外提供“打开配置”。
 - `Esc` 关闭面板；失焦按配置自动隐藏；`settings-shown` 等事件由后端推送。
+- 点击状态项会先让面板失焦（触发自动隐藏），再投递点击事件。后端记录自动隐藏时间，220ms 内的状态项点击只关闭、不再重开，避免闪烁。
+- macOS 面板移除 `data-tauri-drag-region`：无边框窗口被拖离状态项后，下次点击图标会跳回，破坏 popover 预期。
 
 ### 设置窗口
 
@@ -237,14 +243,19 @@ UI 以内联错误条显示，不使用模态弹窗。主要错误码：
 
 | 关注点 | Windows | macOS |
 | --- | --- | --- |
-| DDC 后端 | `ddc-winapi` | `ddc-macos` |
-| 窗口材质 | CSS 半透明 + 背景模糊降级 | `window-vibrancy`（HudWindow），失败静默降级 |
-| 应用形态 | 托盘 + 跳过任务栏；GUI 启动时 `FreeConsole` | `Accessory` 策略、隐藏 Dock 图标 |
+| DDC 后端 | `ddc-winapi` | `ddc-macos`（Apple Silicon 走 `IOAVService`，Intel 走 IOKit） |
+| 显示器身份 | EDID：三字母厂商码、型号、序列号 | CoreGraphics 数值厂商 / 型号 + 产品名；EDID 通常不可用 |
+| 窗口材质 | CSS 半透明 + 背景模糊降级 | `window-vibrancy`（HudWindow），失败静默降级；面板铺满窗口、圆角由原生材质裁切，关闭原生阴影避免方形外框 |
+| 应用形态 | 托盘 + 跳过任务栏；GUI 启动时 `FreeConsole` | `LSUIElement` / `Accessory`，无 Dock 图标，原生应用菜单 |
+| 面板定位 | 工作区右下角 | 状态项下方，夹紧到工作区；首次启动显示在右上角 |
+| 状态栏图标 | 应用图标 | 单色模板图标，随浅色 / 深色菜单栏着色 |
 | 日志 | `%LOCALAPPDATA%\DisplayPilot\logs` | `~/Library/Logs/DisplayPilot` |
-| 权限 | 通常无需管理员 | 某些机型/接口需要辅助功能或屏幕录制权限，按系统提示处理 |
+| 权限 | 通常无需管理员 | DDC/CI 通常无需额外权限；模拟点击 / 辅助功能仅在自动化测试时需要 |
 
 CLI 与 GUI 共用同一套服务层，因此 Windows 上即使前端异常，仍可用 `displaypilot switch ...` 操作。
-由于 Windows 没有 macOS 的菜单栏弹出行为，面板同样以“失焦隐藏”模拟 popover 语义。
+Windows 没有菜单栏状态项，面板同样以“失焦隐藏”模拟 popover 语义并停在工作区右下角；
+macOS 则用状态项矩形作为锚点，并在 `LSUIElement` 下保持无 Dock 图标。
+macOS 设置窗口使用原生标题栏与红绿灯按钮，页面内不再重复渲染关闭按钮。
 
 ## 12. 日志与诊断
 
@@ -285,8 +296,9 @@ CLI 直接构造 `DisplayService`，不经过 Tauri，因此可在无桌面会�
    缓存与串行执行把额外开销限制在首屏。
 4. **稳定 ID 依赖 EDID**：无序列号的设备在换端口后可能改变 ID；这是数据源限制，不通过持久化映射掩盖。
 5. **启发式错误分类**：不同后端错误文本不一，分类可能落到 `internal`；诊断报告保留原始消息。
-6. **macOS 未实机验收**：构建配置、窗口策略与 vibrancy 已实现，但真实菜单栏行为、权限与 DDC 兼容性
-   仍需在 macOS 硬件上确认。
+6. **macOS 身份来源不同**：Apple Silicon 读不到 EDID，厂商以数值码暴露，内置档案分别提供 Windows 与 macOS 两套匹配。数值码稳定但与其他工具的三字母码不一致，用户覆盖配置时需要注意。
+7. **只在单台 macOS 硬件上验证**：菜单栏、vibrancy、DDC 读写与 0–100 范围已在 Apple Silicon + LG 27UL850 上验收；其他显示器、Intel Mac 与外接扩展坞仍按测试清单验收。
+8. **未包含登录项与公证**：当前构建为 ad-hoc 签名；开机自启需要用户手动加入登录项，对外分发应使用 Developer ID 签名并公证。
 
 ## 16. 可扩展点
 

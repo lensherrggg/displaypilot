@@ -167,8 +167,8 @@ value = 0x11
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `vendor_id` | 字符串 | EDID 厂商码，忽略大小写，例如 `GSM`、`DEL`、`ACR`。 |
-| `model_id` | 整数 | EDID 型号码，精确匹配（十进制或 TOML 十六进制均可）。 |
+| `vendor_id` | 字符串 | 厂商标识，忽略大小写。Windows 为 EDID 三字母码（`GSM`、`DEL`）；macOS 为 CoreGraphics 数值码（`1E6D`）。 |
+| `model_id` | 整数 | EDID 型号码，精确匹配（十进制或 TOML 十六进制均可）；macOS 为 `CGDisplay::model_number`，如 LG 27UL850 的 `30470` / `0x7706`。 |
 | `model_name` | 字符串 | 型号名，支持 `*` / `?` 通配，也接受大小写不敏感子串。 |
 | `model_name_any` | 字符串数组 | 任一模式命中即可；用于覆盖固件命名差异。 |
 | `serial_pattern` | 字符串 | 序列号通配，适合只对某台设备启用特殊配置。 |
@@ -179,6 +179,19 @@ value = 0x11
 - 匹配按 `priority` 降序、`id` 升序进行，取第一条命中项。
 - 若没有档案命中，优先使用 `generic-ddc`；再退回第一条空 `match` 的档案；最后退回排序后的第一条。
 - 同型号同序列号的多台显示器会共用同一档案；需要区分时请使用 `serial_pattern` 建立更高优先级的档案。
+- Apple Silicon 上读不到 EDID，厂商 / 型号来自 CoreGraphics 的数值标识，因此 macOS 档案通常写成
+  `match = { backend = "macos", model_id = 30470 }`，而不是匹配三字母厂商码。
+
+macOS 自定义档案示例（用 `displaypilot list` 确认厂商与型号后再修改）：
+
+```toml
+[[custom_profiles]]
+id = "lg-hdr-4k-macos"
+label = "LG HDR 4K"
+priority = 120
+current_input_vcp_code = 0x60
+match = { backend = "macos", vendor_id = "1E6D", model_id = 30470 }
+```
 
 ### 5.3 `capabilities`
 
@@ -333,10 +346,13 @@ value = 0xD2
 | id | 优先级 | 匹配 | 亮度 | 音量 / 静音 | 输入值 |
 | --- | --- | --- | --- | --- | --- |
 | `lg-27ul850` | 100 | `vendor_id = "GSM"` 且型号名含 `27UL850` | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x90`、HDMI2 `0x91`、DP `0xD0`、TypeC `0xD1` |
+| `lg-27ul850-macos` | 110 | `backend = "macos"` 且 `model_id = 30470` | `0x10`，0–100，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x10` |
 | `generic-ddc` | -100 | 空（通用回退） | `0x10`，0–255，`true` | `0x62` / `0x8D`，`auto` | HDMI1 `0x11`、HDMI2 `0x12`、DP `0x0F`、TypeC `0x1B`（标准值） |
 
 LG 的输入值来自现场反馈，属于厂商私有编码；不同固件可能不同。先用「复制诊断」查看 VCP `0x60`
-的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。
+的实际读数，再用覆盖修正。程序本身没有任何 `if LG` 之类的分支。macOS 上 LG HDR 4K 的报告值为
+`0x11/0x12/0x0F/0x10`，亮度与音量最大值为 `0x64`（100），与 Windows 档案的 `0x90/0x91/0xD0/0xD1`
+和 0–255 不同。
 
 ## 8. 验证与排错
 
@@ -354,7 +370,7 @@ LG 的输入值来自现场反馈，属于厂商私有编码；不同固件可�
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
-| `profile_matched = false` | 厂商码 / 型号名不匹配 | 用诊断中的 `vendor_id`、`model_name` 修正 `match`，或新建 `custom_profiles`。 |
+| `profile_matched = false` | 厂商码 / 型号名不匹配 | 用诊断中的 `vendor_id`、`model_id`、`model_name` 修正 `match`，或新建 `custom_profiles`。macOS 需使用数值厂商 / 型号。 |
 | 输入切换失败但诊断有 `0x60` | 值不对或需要厂商写入 | 修正 `value`；尝试 `type = "vendor"` 与 `write_mode`。 |
 | 音量控件不可用 | `auto` 读取失败 | 确认显示器支持 `0x62`；必要时显式 `supported = true` 强制显示。 |
 | 配置覆盖后输入变少 | 覆盖数组时未写全 | `inputs` 是整体替换，补全所有输入。 |

@@ -18,9 +18,19 @@ npm run check          # 版本 + 前端构建 + Rust 测试 + fmt/clippy
 | --- | --- |
 | `npm run check:version` | `package.json`、`tauri.conf.json`、`Cargo.toml` 版本一致，且 CHANGELOG 有对应小节。 |
 | `npm run build` | `tsc --noEmit` 类型检查 + Vite 构建 `index.html`、`settings.html`。 |
-| `npm run test:rust` | 30 个 Rust 单元测试（领域逻辑、配置、档案、工具函数、CLI 解析）。 |
+| `npm run test:rust` | 31 个 Rust 单元测试（领域逻辑、配置、档案、工具函数、CLI 解析）。 |
 | `npm run check:rust` | `cargo fmt --check` + `cargo clippy --all-targets -D warnings`。 |
 | `npm run tauri build` | 生成 Windows/macOS 可执行文件与安装包。 |
+
+### 0.2.0 自动化结果（macOS 27.0.1 arm64）
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm run check:version` | 通过：0.2.0 三处清单、Cargo.lock 与 CHANGELOG 一致。 |
+| `npm run build` | 通过：两个页面与资源产出到 `dist/`。 |
+| `npm run test:rust` | 通过：31 passed / 0 failed（新增 macOS 数值身份档案匹配测试）。 |
+| `npm run check:rust` | 通过：格式无差异，Clippy 无警告。 |
+| `npm run tauri build -- --debug` | 通过：生成 `DisplayPilot.app`（41.9 MiB）与 `.dmg`（9.4 MiB）。 |
 
 ### 0.1.0 自动化结果（Windows 10.0.22631 x64）
 
@@ -104,14 +114,31 @@ npm run tauri dev
   `os error 50（不支持该请求）`，因此输入切换、亮度/音量写入未在真实 DDC 显示器上验证。
   请在支持 DDC/CI 的 LG 27UL850 或其他显示器上重跑第 4 节。
 
-### macOS（待实机验收）
+### macOS
 
-- [ ] 以 `.app` 启动后不显示 Dock 图标，菜单栏出现托盘图标。
-- [ ] 面板使用 vibrancy 材质；不可用时仍为可读的半透明背景，无崩溃。
-- [ ] 面板出现在菜单栏图标附近，不超出屏幕边缘。
-- [ ] 首次 DDC 访问按系统提示授予所需权限。
-- [ ] 深浅色、菜单栏空间不足、多显示器排列下的定位。
+```bash
+npm run tauri build -- --debug   # 产出 .app，便于验证 LSUIElement
+open src-tauri/target/debug/bundle/macos/DisplayPilot.app
+# 或开发模式
+npm run tauri dev
+```
+
+首次启动：
+
+- [x] 以 `.app` 启动后不显示 Dock 图标（`lsappinfo` 显示 `type="UIElement"`），菜单栏出现显示器箭头图标。
+- [x] 菜单栏图标为模板图，深色菜单栏下渲染为白色，不遮挡系统图标。
+- [x] 面板使用 vibrancy 材质，圆角与半透明背景正常；`role` 与键盘焦点未受影响。
+- [x] 面板失焦后自动隐藏（激活 Finder 验证）；`Esc` 调用 `hide_panel`。
+- [x] 再次打开 `.app`（`RunEvent::Reopen`）会重新显示面板，并居中于状态项下方。
+- [x] 面板锚定在状态项下方，`y` 等于工作区顶部（菜单栏正下方），不会超出屏幕边缘。
+- [x] 应用菜单包含关于、设置（`⌘,`）、编辑、窗口与退出；设置窗口加载独立的 `settings.html`。
+- [x] 设置窗口显示版本、步骤开关、快捷键注册状态与配置文件状态。
+- [ ] 浅色模式、菜单栏空间不足、多显示器排列下的定位。
 - [ ] 全局快捷键使用 `CommandOrControl` 时符合 macOS 习惯，且不与系统快捷键冲突。
+
+> 2026-10-28 实机记录：macOS 27.0.1 arm64，LG 27UL850（系统识别为 “LG HDR 4K”）。以上勾选项已通过
+> 屏幕截图、`CGWindowList` 窗口几何与日志复核；设置窗口通过临时代码自动打开验证，截图确认后已还原。
+> 未在只有一台显示器时切换输入源，避免黑屏；输入切换需在接入第二信号源后按 4.2 节验收。
 
 ## 4. DDC/CI 手工验收
 
@@ -124,15 +151,25 @@ npm run tauri dev
 - [ ] 断开/重连显示器后点击刷新，列表更新；同一显示器 ID 保持不变（有序列号时）。
 - [ ] 无显示器时显示空状态与“重新扫描”，错误为 `no_displays`，不崩溃。
 
+#### macOS 实测（Apple Silicon + LG 27UL850）
+
+- `displaypilot list`：识别为 `LG HDR 4K`，厂商 `1E6D`、型号 `0x7706`，精确匹配 `lg-27ul850-macos`。
+- `displaypilot diagnose`：亮度 `0x63 / 0x64` → 99%，音量 `0x64 / 0x64` → 100%，静音 `0x02`，
+  当前输入 `0x11`，能力字符串包含 `UL850` 与 `60( 11 12 0F 10)`。
+- 日志确认 `ddc-macos` 枚举到 1 台显示器，CoreGraphics 补齐了厂商 / 型号 / 序列号（`44077`）。
+
 ### 4.2 输入源切换
 
 对每个配置的输入执行一次（目标接口需有信号源）：
+
+> 安全提示：只有一台显示器且当前连接是唯一信号源时，不要切换到无信号的输入，否则可能黑屏。
+> 先接入第二台主机，或确认目标接口有信号后再验收。
 
 - [ ] 点击后显示器实际切换；面板当前项更新。
 - [ ] 重复点击当前输入不会发送多余写入。
 - [ ] 目标接口无信号时返回可操作错误，面板恢复可用，不长期卡在“切换中…”。
 - [ ] 切换到另一台主机后，在原主机再次操作会得到连接中断/失败提示（符合 DDC 限制）。
-- [ ] 厂商私有编码（如 LG `0x90/0x91/0xD0/0xD1`）与实际接口一一对应；不一致时按配置文档覆盖。
+- [ ] 厂商私有编码与实际接口一一对应：Windows 的 LG 27UL850 使用 `0x90/0x91/0xD0/0xD1`，macOS 档案使用 `0x11/0x12/0x0F/0x10`；不一致时按配置文档覆盖。
 - [ ] `displaypilot switch dp --display 1` 与面板行为一致。
 
 ### 4.3 亮度
@@ -203,7 +240,7 @@ npm run tauri dev
 | `displaypilot diagnose --json` | 完整诊断 JSON。 |
 | `displaypilot config` | 路径、配置、档案、快捷键。 |
 | `displaypilot --help` | 帮助，退出码 0。 |
-| `displaypilot --version` | `displaypilot 0.1.0`。 |
+| `displaypilot --version` | `displaypilot 0.2.0`。 |
 | `displaypilot bogus` | 参数错误，退出码 64。 |
 | `displaypilot --help --json` | 帮助优先，退出码 0。 |
 
@@ -246,9 +283,16 @@ npm run tauri build
 
 | 项 | 状态 |
 | --- | --- |
-| 交叉编译 | 未在 macOS 主机上执行 |
-| `.app` 启动 / Accessory / vibrancy | 待实机验收 |
-| 真实 DDC 后端 | 待实机验收 |
+| macOS 版本 / 架构 | 27.0.1 / arm64（Apple Silicon） |
+| `.app` 启动 / Accessory | 通过：无 Dock 图标，`LSUIElement = true`，状态项可用 |
+| 菜单栏模板图标 | 通过：深色菜单栏下正确着色 |
+| vibrancy / 面板定位 | 通过：锚定状态项，工作区顶部对齐 |
+| 失焦自动隐藏 / 再次打开 | 通过 |
+| 设置窗口 | 通过：独立页面、深色渲染正常 |
+| `cargo test` / clippy / `npm run build` | 通过 |
+| 真实 DDC 读取 | 通过：LG 27UL850 亮度 / 音量 / 静音 / 输入 / 能力字符串 |
+| 真实输入切换 | 未执行：仅一台显示器，避免切换至无信号接口 |
+| 签名 | 本地 ad-hoc；未做 Developer ID 签名与公证 |
 
 ## 11. 回归清单（每次发布前）
 

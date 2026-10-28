@@ -6,19 +6,19 @@ DisplayPilot 是一个跨平台的菜单栏 / 系统托盘小工具，用 DDC/CI
 
 - **输入源切换**：HDMI 1、HDMI 2、DisplayPort、USB-C（由显示器配置定义，可自行增删）。
 - **亮度与音频**：亮度、音量、静音，滑块防抖后写入，按显示器真实 VCP 范围换算。
-- **配置驱动**：所有厂商差异都写在 TOML 里；内置 LG 27UL850 与通用 DDC/CI 档案，但没有机型硬编码。
+- **配置驱动**：所有厂商差异都写在 TOML 里；内置 LG 27UL850（Windows 与 macOS 两套身份）与通用 DDC/CI 档案，但没有机型硬编码。
 - **键盘友好**：可配置全局快捷键；面板与设置页支持键盘、VoiceOver 和减少动态效果。
 - **可诊断**：复制包含显示器身份、VCP 读数与能力字符串的报告，便于定位固件差异。
 - **命令行兜底**：图形界面之外保留 `list / switch / brightness / volume / mute / diagnose / config` 子命令。
 
-> 默认版本为 **0.1.0**。Windows 已完成构建、CLI 与图形界面冒烟验证；本机显示器不响应 DDC/CI，
-> 输入切换 / 亮度 / 音量的真实写入仍需在支持 DDC/CI 的硬件上验收。macOS 目标已配置，同样需要实机验收。
+> 当前版本 **0.2.0**。Windows 已完成构建、CLI 与界面冒烟验证；macOS 已在 Apple Silicon + LG 27UL850
+> （LG HDR 4K）上完成菜单栏、DDC/CI 读取与真实写入验证。其他显示器仍需按测试清单验收。
 
 ## 界面
 
 | 窗口 | 说明 |
 | --- | --- |
-| 控制面板 | 360×620 的无边框浮层，跟随托盘位置显示；失去焦点自动隐藏，`Esc` 关闭。包含显示器选择、输入源网格、亮度滑块、音量 / 静音、状态行与「复制诊断」。 |
+| 控制面板 | 360×620 的无边框浮层。macOS 锚定在菜单栏状态项下方，失去焦点自动隐藏，`Esc` 关闭；Windows 显示在工作区右下角。包含显示器选择、输入源网格、亮度滑块、音量 / 静音、状态行与「复制诊断」。 |
 | 设置窗口 | 独立可调整窗口。修改亮度 / 音量步进、自动隐藏、音频占位显示；查看快捷键注册状态；刷新显示器；查看配置档、配置文件与日志路径。 |
 
 外观遵循 macOS Human Interface Guidelines 的核心约束：系统字体、语义化颜色、8pt 间距体系、
@@ -30,7 +30,7 @@ Windows 上使用同布局的 CSS 半透明面板；macOS 上额外应用 vibran
 | 平台 | 状态 | 说明 |
 | --- | --- | --- |
 | Windows 10/11 x64 | 支持，已完成构建、CLI 与界面冒烟验证 | 通过 `ddc-winapi` 后端访问显示器；需要 WebView2 Runtime 与 MSVC 工具链。真实 VCP 写入需 DDC/CI 可用硬件。 |
-| macOS 11+ | 目标平台，需实机验收 | 通过 `ddc-macos` 后端访问；应用以 Accessory 模式运行（不显示 Dock 图标），面板使用 vibrancy。 |
+| macOS 11+（Intel / Apple Silicon） | 支持，已在 Apple Silicon + LG 27UL850 上实机验证 | 通过 `ddc-macos` 后端访问；以 Accessory / `LSUIElement` 模式运行（无 Dock 图标），面板使用 vibrancy 并锚定到菜单栏状态项。 |
 | Linux | 未正式支持 | 依赖层可能可用，但未提供打包、测试与桌面集成。 |
 
 DDC/CI 的硬性前提：
@@ -73,13 +73,17 @@ npm run tauri build
 ```
 
 产物位于 `src-tauri/target/release/`：可执行文件为 `displaypilot`（Windows 为 `displaypilot.exe`），
-安装包在 `src-tauri/target/release/bundle/`。
+安装包在 `src-tauri/target/release/bundle/`。macOS 会生成 `DisplayPilot.app` 与 `.dmg`；本地构建默认
+做 ad-hoc 签名，分发给其他机器时需要在系统设置中允许打开，正式分发应使用 Developer ID 签名并公证。
 
 ## 使用
 
 ### 托盘与面板
 
-- 左键单击托盘图标：显示 / 隐藏面板；右键：打开面板、设置、刷新显示器、退出。
+- 左键单击托盘 / 状态栏图标：显示或隐藏面板；右键：打开面板、设置、刷新显示器、退出。
+- macOS 上应用不显示 Dock 图标。首次启动时面板显示在工作区右上角；之后点击状态项、使用快捷键或
+  再次打开应用，面板会居中显示在状态项正下方，并按屏幕工作区自动夹紧。
+- macOS 的「设置…」也可以通过应用菜单的 `⌘,` 打开。
 - 面板顶部可切换显示器（多台时出现下拉菜单）。
 - 点击输入源卡片执行切换，切换期间按钮进入忙碌状态并阻止重复点击。
 - 亮度 / 音量滑块在停止拖动约 **130ms** 后写入；方向键与快捷键按设置的步进调整。
@@ -207,11 +211,14 @@ DisplayPilot/
 ├── settings.html            # 设置窗口
 ├── src/                     # 前端逻辑、样式、mock 与类型
 ├── src-tauri/
+│   ├── Info.plist            # macOS LSUIElement 与 HiDPI 元数据
+│   ├── icons/                # 应用图标与菜单栏模板图标
 │   ├── profiles/
 │   │   ├── builtin.toml     # 编译进程序的内置档案
 │   │   └── config.toml      # 首次启动写入用户的默认配置
 │   └── src/
-│       ├── app.rs           # Tauri 初始化、托盘、窗口事件
+│       ├── app.rs           # Tauri 初始化、托盘、菜单与窗口事件
+│       ├── app_window.rs    # 面板锚定、显示 / 隐藏、打开目录
 │       ├── worker.rs        # 专用 DDC 工作线程与请求超时
 │       ├── service.rs       # 业务逻辑、快照、诊断
 │       ├── transport.rs     # DDC/CI 传输抽象与 ddc-hi 实现
@@ -241,7 +248,7 @@ npm run check          # 以上全部
 
 ## 版本管理
 
-- 当前版本 **0.1.0**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
+- 当前版本 **0.2.0**，遵循 SemVer；`0.x` 阶段允许在次版本中加入不兼容变更。
 - `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（以及 `Cargo.lock`）由脚本同步。
 - 发版步骤：`npm run version:set -- 0.2.0` → 在 `CHANGELOG.md` 增加对应小节 → `npm run check`。
 - 每次发布打 `v<version>` 标签。详细规则见 **[docs/VERSIONING.md](docs/VERSIONING.md)**。
@@ -257,6 +264,7 @@ DisplayPilot 不包含遥测、不发起网络请求，也不需要账号。所�
 | --- | --- |
 | 未发现显示器 | 唤醒显示器；在 OSD 中启用 DDC/CI；改用直连线缆；点击「重新扫描」。 |
 | 输入源切换失败 | 用「复制诊断」确认 VCP `0x60` 与能力字符串；在 `profile_overrides` 中修正输入值或改用厂商选择器。 |
+| macOS 上配置档显示为通用 / 亮度百分比偏低 | Apple Silicon 读不到 EDID，程序会用数值厂商与型号匹配；内置档案未覆盖的机型请在 `custom_profiles` 中用 `vendor_id = "1E6D"` 这类数值写法添加。 |
 | 亮度可调但音量不可用 | 显示器可能不支持 `0x62`；`auto` 探测会禁用控件，属预期行为。可在配置中显式设为 `true` 强制显示。 |
 | 快捷键无效 | 查看设置页的注册状态；换用未被系统占用的组合键后重新加载配置。 |
 | 配置修改后没有生效 | 设置页点击「重新加载配置」；若文件解析失败，页面会显示具体错误。 |
